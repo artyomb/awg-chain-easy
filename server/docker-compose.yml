@@ -18,6 +18,7 @@ services:
       net.ipv4.conf.all.rp_filter: "0"
     ports:
       - "${WG_PORT:-51820}:${WG_PORT:-51820}/udp"
+      - "${AWG2_PORT:-51822}:${AWG2_PORT:-51822}/udp"
       - "${WEBUI_BIND_ADDRESS:-127.0.0.1}:${PORT:-51821}:${PORT:-51821}/tcp"
     environment:
       WG_HOST: ${WG_HOST:?Set WG_HOST in .env}
@@ -25,6 +26,11 @@ services:
       WG_CONFIG_PORT: ${WG_CONFIG_PORT:-51820}
       WG_DEFAULT_ADDRESS: ${WG_DEFAULT_ADDRESS:-10.8.3.x}
       WG_DEFAULT_DNS: ${WG_DEFAULT_DNS:-auto}
+      AWG2_PORT: ${AWG2_PORT:-51822}
+      AWG2_CONFIG_PORT: ${AWG2_CONFIG_PORT:-51822}
+      AWG2_DEFAULT_ADDRESS: ${AWG2_DEFAULT_ADDRESS:-10.8.4.x}
+      AWG2_DEFAULT_DNS: ${AWG2_DEFAULT_DNS:-auto}
+      AWG2_I1: ${AWG2_I1:-}
       WG_ALLOWED_IPS: ${WG_ALLOWED_IPS:-0.0.0.0/0}
       WG_PERSISTENT_KEEPALIVE: ${WG_PERSISTENT_KEEPALIVE:-25}
       WG_MTU: ${WG_MTU:-1280}

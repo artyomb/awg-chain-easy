@@ -1,8 +1,8 @@
 # AWG Chain Easy
 
 `server` recreates the operating model of
-`ghcr.io/gennadykataev/awg-easy` for the AWG 3 protocol: one container runs the
-userspace tunnel and an authenticated browser UI for client management.
+`ghcr.io/gennadykataev/awg-easy` with AWG3 and legacy AWG2 inbounds: one
+container runs both userspace tunnels and an authenticated browser UI.
 
 It does not run the original image because that project predates the AWG 3
 header-protection protocol. This local image builds on the pinned
@@ -11,14 +11,14 @@ header-protection protocol. This local image builds on the pinned
 ## Features
 
 - Create, enable, disable, and delete clients in the Web UI.
-- Download AWG 3 profiles and display configuration QR codes.
+- Create and download AWG3 or AWG2 profiles and display configuration QR codes.
 - Show latest handshake, endpoint, and transfer counters.
 - Import up to eight third-party AWG 3 or legacy AWG client configs as upstream
   tunnels.
 - Route by domain or IPv4 CIDR to an upstream, directly to the server uplink,
   or to a fail-closed blocked destination.
 - Keep each upstream in a separate interface and policy-routing table.
-- Persist `wg0.json`, `wg0.conf`, keys, and exported profiles under `server/config`.
+- Persist `wg0.json`, both generated server configs, keys, and exported profiles under `server/config`.
 - Synchronize peer changes without restarting the tunnel.
 - Bcrypt password authentication, same-site sessions, login throttling, and
   security response headers.
@@ -61,6 +61,10 @@ WG_PORT=51820
 WG_CONFIG_PORT=51820
 WG_DEFAULT_ADDRESS=10.8.3.x
 WG_DEFAULT_DNS=auto
+AWG2_PORT=51822
+AWG2_CONFIG_PORT=51822
+AWG2_DEFAULT_ADDRESS=10.8.4.x
+AWG2_DEFAULT_DNS=auto
 WG_ALLOWED_IPS=0.0.0.0/0
 WG_PERSISTENT_KEEPALIVE=25
 WG_MTU=1280
@@ -72,11 +76,14 @@ Custom server and UI ports can be selected before startup:
 ```dotenv
 WG_PORT=41725
 WG_CONFIG_PORT=41725
-PORT=51822
+AWG2_PORT=41726
+AWG2_CONFIG_PORT=41726
+PORT=51821
 ```
 
 After changing build inputs, run `./manage.sh up`; it rebuilds the local image
-when necessary. Firewall rules must allow `WG_PORT/udp`. The UI TCP port does
+when necessary. Firewall rules must allow `WG_PORT/udp` and `AWG2_PORT/udp`.
+The UI TCP port does
 not need public firewall access when using loopback binding.
 
 ## Destination routing
@@ -126,16 +133,17 @@ client profiles. `DNS_UPSTREAM` selects the IPv4 resolver used by the proxy.
 ```text
 config/
   wg0.json             # server and client metadata, including private keys
-  wg0.conf             # generated active server configuration
+  wg0.conf             # generated AWG3 server configuration
+  wg2.conf             # generated AWG2 server configuration
   clients/*.conf       # generated client exports
   routing.json         # upstream metadata and destination policies
   upstreams/*.conf     # imported upstream profiles, including private keys
 ```
 
-Treat the entire directory as secret and back it up securely. `wg0.json` from
-an older AWG Easy V2 installation is not silently upgraded because it lacks
-the AWG 3 header-protection key and parameters. Use a fresh directory, then
-recreate clients in the UI.
+Treat the entire directory as secret and back it up securely. Existing version
+3 AWG Chain Easy state is migrated automatically: current clients remain AWG3,
+and an independent AWG2 server identity is generated. This does not import the
+unrelated state format used by upstream AWG Easy V2 installations.
 
 ## Operations
 

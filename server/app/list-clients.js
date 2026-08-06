@@ -9,6 +9,5 @@ if (!clients.length) {
   process.exit(0);
 }
 for (const client of clients) {
-  console.log(`${client.enabled ? 'enabled ' : 'disabled'}\t${client.address}\t${client.name}\t${client.id}`);
+  console.log(`${client.enabled ? 'enabled ' : 'disabled'}\t${client.protocol || 'AWG3'}\t${client.address}\t${client.name}\t${client.id}`);
 }
-

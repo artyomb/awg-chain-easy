@@ -2,7 +2,7 @@
 
 const elements = Object.fromEntries([
   'login-view', 'app-view', 'logout-button', 'login-form', 'password', 'login-error',
-  'new-client-button', 'create-panel', 'cancel-create-button', 'create-form', 'client-name',
+  'new-client-button', 'create-panel', 'cancel-create-button', 'create-form', 'client-name', 'client-protocol',
   'create-error', 'page-message', 'endpoint-value', 'client-count', 'connected-count',
   'client-rows', 'empty-state', 'empty-create-button', 'refresh-button', 'last-updated',
   'qr-dialog', 'qr-title', 'qr-image', 'close-qr-button',
@@ -258,6 +258,7 @@ function renderClients(clients) {
 
     row.append(
       cell('Name', name),
+      cell('Protocol', client.protocol || 'AWG3', 'mono'),
       cell('Address', client.address, 'mono'),
       cell('Status', statusBadge(client)),
       cell('Latest handshake', time(client.latestHandshakeAt), 'numeric'),
@@ -352,7 +353,7 @@ elements['create-form'].addEventListener('submit', async (event) => {
   event.preventDefault();
   elements['create-error'].textContent = '';
   try {
-    await request('/api/wireguard/client', { method: 'POST', body: JSON.stringify({ name: elements['client-name'].value }) });
+    await request('/api/wireguard/client', { method: 'POST', body: JSON.stringify({ name: elements['client-name'].value, protocol: elements['client-protocol'].value }) });
     elements['client-name'].value = '';
     elements['create-panel'].hidden = true;
     await refresh();

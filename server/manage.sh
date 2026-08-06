@@ -23,7 +23,7 @@ main() {
     status)
       load_env; ensure_docker; compose ps
       if compose ps --status running --services | grep -Fxq awg-chain-easy; then
-        compose exec -T awg-chain-easy awg show awg3 | sed -E \
+        compose exec -T awg-chain-easy sh -c 'awg show awg3; awg show awg2' | sed -E \
           -e 's/(private key: ).*/\1(hidden)/' \
           -e 's/(preshared key: ).*/\1(hidden)/' \
           -e 's/(header protection key: ).*/\1(hidden)/'

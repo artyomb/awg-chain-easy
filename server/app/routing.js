@@ -109,9 +109,9 @@ function shellNftString(value) {
 }
 
 class RoutingManager {
-  constructor({ inboundInterface, downstreamNetwork, mtu, dnsUpstream, dnsTtlMin, dnsTtlMax }) {
-    this.inboundInterface = inboundInterface;
-    this.downstreamNetwork = downstreamNetwork;
+  constructor({ inboundInterfaces, downstreamNetworks, mtu, dnsUpstream, dnsTtlMin, dnsTtlMax }) {
+    this.inboundInterfaces = inboundInterfaces;
+    this.downstreamNetworks = downstreamNetworks;
     this.mtu = mtu;
     this.dnsUpstream = dnsUpstream;
     this.dnsTtlMin = dnsTtlMin;
@@ -276,7 +276,7 @@ class RoutingManager {
   }
 
   systemDirectNetworks() {
-    const networks = new Set([this.downstreamNetwork]);
+    const networks = new Set(this.downstreamNetworks);
     const routes = tryRun('ip', ['-4', 'route', 'show', 'dev', 'eth0']);
     if (routes.status === 0) {
       for (const line of routes.stdout.trim().split('\n')) {
@@ -303,14 +303,20 @@ class RoutingManager {
     const system = this.systemDirectNetworks();
     const declarations = activePolicies.map((policy) => `    ${this.policyNftSet(policy)}`).join('\n');
     const classification = activePolicies.map((policy) => `        ip daddr @${policySetName(policy)} meta mark set ${routeMark(policy.route, this.state)} ct mark set meta mark return`).join('\n');
-    const upstreamNat = Object.values(this.state.upstreams).map((upstream) => `        ip saddr ${this.downstreamNetwork} oifname ${shellNftString(upstream.interface)} masquerade`).join('\n');
+    const upstreamNat = Object.values(this.state.upstreams).flatMap((upstream) => this.downstreamNetworks.map((network) => `        ip saddr ${network} oifname ${shellNftString(upstream.interface)} masquerade`)).join('\n');
+    const inboundFilter = this.inboundInterfaces.map((interfaceName) => `iifname != ${shellNftString(interfaceName)}`).join(' ');
+    const enforce = this.inboundInterfaces.map((interfaceName) => `        iifname ${shellNftString(interfaceName)} meta mark ${BLOCK_MARK} reject with icmp type admin-prohibited`).join('\n');
+    const dnsRedirect = this.inboundInterfaces.flatMap((interfaceName) => [
+      `        iifname ${shellNftString(interfaceName)} udp dport 53 redirect to :53`,
+      `        iifname ${shellNftString(interfaceName)} tcp dport 53 redirect to :53`,
+    ]).join('\n');
     return `flush table ${NFT_FAMILY} ${NFT_TABLE}\n` +
       `table ${NFT_FAMILY} ${NFT_TABLE} {\n` +
       `    set system_direct_v4 { type ipv4_addr; flags interval; elements = { ${system.join(', ')} }; }\n` +
       `${declarations ? `${declarations}\n` : ''}` +
       `    chain classify {\n` +
       `        type filter hook prerouting priority -150; policy accept;\n` +
-      `        iifname != ${shellNftString(this.inboundInterface)} return\n` +
+      `        ${inboundFilter} return\n` +
       `        meta mark set ct mark\n` +
       `        ct mark != 0 return\n` +
       `        ip daddr @system_direct_v4 meta mark set ${DIRECT_MARK} ct mark set meta mark return\n` +
@@ -320,12 +326,11 @@ class RoutingManager {
       `    }\n` +
       `    chain enforce {\n` +
       `        type filter hook forward priority -10; policy accept;\n` +
-      `        iifname ${shellNftString(this.inboundInterface)} meta mark ${BLOCK_MARK} reject with icmp type admin-prohibited\n` +
+      `${enforce}\n` +
       `    }\n` +
       `    chain dns_redirect {\n` +
       `        type nat hook prerouting priority -100; policy accept;\n` +
-      `        iifname ${shellNftString(this.inboundInterface)} udp dport 53 redirect to :53\n` +
-      `        iifname ${shellNftString(this.inboundInterface)} tcp dport 53 redirect to :53\n` +
+      `${dnsRedirect}\n` +
       `    }\n` +
       `    chain source_nat {\n` +
       `        type nat hook postrouting priority 100; policy accept;\n` +
