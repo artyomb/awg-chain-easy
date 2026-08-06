@@ -1,0 +1,59 @@
+services:
+  awg-chain-easy:
+    build:
+      context: .
+      args:
+        AWG_IMAGE: ${AWG_IMAGE:-amneziavpn/amneziawg-go:3.0.20260805}
+    image: ${APP_IMAGE:-awg-chain-easy:local}
+    container_name: ${CONTAINER_NAME:-awg-chain-easy}
+    restart: unless-stopped
+    init: true
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.rp_filter: "0"
+    ports:
+      - "${WG_PORT:-51820}:${WG_PORT:-51820}/udp"
+      - "${WEBUI_BIND_ADDRESS:-127.0.0.1}:${PORT:-51821}:${PORT:-51821}/tcp"
+    environment:
+      WG_HOST: ${WG_HOST:?Set WG_HOST in .env}
+      WG_PORT: ${WG_PORT:-51820}
+      WG_CONFIG_PORT: ${WG_CONFIG_PORT:-51820}
+      WG_DEFAULT_ADDRESS: ${WG_DEFAULT_ADDRESS:-10.8.3.x}
+      WG_DEFAULT_DNS: ${WG_DEFAULT_DNS:-auto}
+      WG_ALLOWED_IPS: ${WG_ALLOWED_IPS:-0.0.0.0/0}
+      WG_PERSISTENT_KEEPALIVE: ${WG_PERSISTENT_KEEPALIVE:-25}
+      WG_MTU: ${WG_MTU:-1280}
+      WG_DEVICE: ${WG_DEVICE:-eth0}
+      PORT: ${PORT:-51821}
+      PASSWORD_HASH: ${PASSWORD_HASH:-}
+      MAX_AGE: ${MAX_AGE:-720}
+      DNS_UPSTREAM: ${DNS_UPSTREAM:-1.1.1.1}
+      DNS_TTL_MIN: ${DNS_TTL_MIN:-30}
+      DNS_TTL_MAX: ${DNS_TTL_MAX:-86400}
+      JC: ${JC:-6}
+      JMIN: ${JMIN:-64}
+      JMAX: ${JMAX:-128}
+      S1: ${S1:-64}
+      S2: ${S2:-56}
+      S3: ${S3:-32}
+      S4: ${S4:-16}
+      CONTENT_PADDING_ADDITION: ${CONTENT_PADDING_ADDITION:-0-32}
+      REKEY_AFTER_TIME: ${REKEY_AFTER_TIME:-110-130}
+      REKEY_TIMEOUT: ${REKEY_TIMEOUT:-4-6}
+      REJECT_AFTER_TIME: ${REJECT_AFTER_TIME:-170-190}
+      KEEPALIVE_TIMEOUT: ${KEEPALIVE_TIMEOUT:-8-12}
+      MAX_HANDSHAKE_ATTEMPTS: ${MAX_HANDSHAKE_ATTEMPTS:-15-20}
+      I1: ${I1:-<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>}
+    volumes:
+      - ${CONFIG_DIR:-./config}:/etc/wireguard
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$$PORT/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

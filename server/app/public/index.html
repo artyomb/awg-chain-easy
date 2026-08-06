@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>AWG Chain Easy</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <header class="global-header">
+    <div class="header-inner">
+      <div class="product"><span class="product-mark" aria-hidden="true">AC</span><span>AWG Chain Easy</span></div>
+      <nav id="primary-nav" class="primary-nav" aria-label="Primary navigation" hidden>
+        <button class="nav-button active" data-page="clients" type="button">Clients</button>
+        <button class="nav-button" data-page="routing" type="button">Routing</button>
+      </nav>
+      <button id="logout-button" class="button secondary compact" type="button" hidden>Sign out</button>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <section id="login-view" class="login-panel" aria-labelledby="login-title" hidden>
+      <h1 id="login-title">Administrator sign in</h1>
+      <p>Use the password configured for this server.</p>
+      <form id="login-form">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+        <p id="login-error" class="form-error" role="alert"></p>
+        <button class="button primary" type="submit">Sign in</button>
+      </form>
+    </section>
+
+    <section id="app-view" hidden>
+      <div id="clients-page">
+      <div class="page-heading">
+        <div>
+          <h1>Clients</h1>
+          <p>Manage AWG 3 access profiles and connection state.</p>
+        </div>
+        <button id="new-client-button" class="button primary" type="button">New client</button>
+      </div>
+
+      <section class="status-strip" aria-label="Server status">
+        <div class="status-fact">
+          <span class="fact-label">Tunnel</span>
+          <span id="tunnel-status" class="status-badge running"><span class="status-dot"></span>Running</span>
+        </div>
+        <div class="status-fact"><span class="fact-label">Endpoint</span><span id="endpoint-value" class="fact-value mono">—</span></div>
+        <div class="status-fact"><span class="fact-label">Clients</span><span id="client-count" class="fact-value numeric">0</span></div>
+        <div class="status-fact"><span class="fact-label">Connected</span><span id="connected-count" class="fact-value numeric">0</span></div>
+      </section>
+
+      <p id="page-message" class="page-message" role="status" hidden></p>
+
+      <section id="create-panel" class="create-panel" aria-labelledby="create-title" hidden>
+        <div class="section-heading">
+          <div><h2 id="create-title">New client</h2><p>The next free address is assigned automatically.</p></div>
+          <button id="cancel-create-button" class="button secondary compact" type="button">Cancel</button>
+        </div>
+        <form id="create-form" class="inline-form">
+          <div class="field"><label for="client-name">Name</label><input id="client-name" name="name" maxlength="64" autocomplete="off" required></div>
+          <button class="button primary" type="submit">Create client</button>
+        </form>
+        <p id="create-error" class="form-error" role="alert"></p>
+      </section>
+
+      <section class="resource-section" aria-labelledby="clients-title">
+        <div class="section-heading">
+          <div><h2 id="clients-title">Access profiles</h2><p id="last-updated">Waiting for server data.</p></div>
+          <button id="refresh-button" class="button secondary compact" type="button">Refresh</button>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Latest handshake</th><th>Transfer</th><th class="actions-column">Actions</th></tr></thead>
+            <tbody id="client-rows"></tbody>
+          </table>
+          <div id="empty-state" class="empty-state" hidden>
+            <p>No clients configured.</p>
+            <button id="empty-create-button" class="button primary" type="button">Create first client</button>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div id="routing-page" hidden>
+        <div class="page-heading">
+          <div>
+            <h1>Destination routing</h1>
+            <p>Route domains and IPv4 networks directly, through an upstream AWG tunnel, or block them.</p>
+          </div>
+          <div class="page-actions">
+            <button id="new-upstream-button" class="button secondary" type="button">Import upstream</button>
+            <button id="new-policy-button" class="button primary" type="button">New policy</button>
+          </div>
+        </div>
+
+        <section class="status-strip" aria-label="Routing status">
+          <div class="status-fact"><span class="fact-label">DNS policy</span><span id="dns-status" class="status-badge running"><span class="status-dot"></span>Running</span></div>
+          <div class="status-fact"><span class="fact-label">Resolver</span><span id="dns-upstream" class="fact-value mono">—</span></div>
+          <div class="status-fact"><span class="fact-label">Upstreams</span><span id="upstream-count" class="fact-value numeric">0</span></div>
+          <div class="status-fact"><span class="fact-label">Policies</span><span id="policy-count" class="fact-value numeric">0</span></div>
+        </section>
+
+        <section class="create-panel" aria-labelledby="default-route-title">
+          <div class="section-heading">
+            <div><h2 id="default-route-title">Default route</h2><p>Used when no enabled destination policy matches.</p></div>
+          </div>
+          <form id="default-route-form" class="inline-form">
+            <div class="field"><label for="default-route">Destination</label><select id="default-route" required></select></div>
+            <button class="button primary" type="submit">Save default</button>
+          </form>
+          <p id="default-route-error" class="form-error" role="alert"></p>
+        </section>
+
+        <section id="upstream-create-panel" class="create-panel" aria-labelledby="upstream-create-title" hidden>
+          <div class="section-heading">
+            <div><h2 id="upstream-create-title">Import upstream AWG3 config</h2><p>Hooks and executable config directives are rejected.</p></div>
+            <button id="cancel-upstream-button" class="button secondary compact" type="button">Cancel</button>
+          </div>
+          <form id="upstream-form" class="stack-form">
+            <div class="field"><label for="upstream-name">Name</label><input id="upstream-name" maxlength="64" required></div>
+            <div class="field wide"><label for="upstream-file">Config file</label><input id="upstream-file" type="file" accept=".conf,text/plain"></div>
+            <div class="field wide"><label for="upstream-config">Configuration</label><textarea id="upstream-config" class="code-input" rows="10" spellcheck="false" required></textarea></div>
+            <div><button class="button primary" type="submit">Import and start</button></div>
+          </form>
+          <p id="upstream-error" class="form-error" role="alert"></p>
+        </section>
+
+        <section class="resource-section spaced" aria-labelledby="upstreams-title">
+          <div class="section-heading"><div><h2 id="upstreams-title">Upstream tunnels</h2><p>Each active config has an isolated userspace interface and routing table.</p></div></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Interface</th><th>Endpoint</th><th>Status</th><th>Handshake</th><th>Transfer</th><th class="actions-column">Actions</th></tr></thead>
+              <tbody id="upstream-rows"></tbody>
+            </table>
+            <div id="upstream-empty" class="empty-state"><p>No upstream tunnels configured.</p></div>
+          </div>
+        </section>
+
+        <section id="policy-create-panel" class="create-panel" aria-labelledby="policy-create-title" hidden>
+          <div class="section-heading">
+            <div><h2 id="policy-create-title">New destination policy</h2><p>Lower priority numbers are evaluated first.</p></div>
+            <button id="cancel-policy-button" class="button secondary compact" type="button">Cancel</button>
+          </div>
+          <form id="policy-form" class="form-grid">
+            <div class="field"><label for="policy-name">Name</label><input id="policy-name" maxlength="64" required></div>
+            <div class="field"><label for="policy-priority">Priority</label><input id="policy-priority" type="number" min="1" max="10000" value="100" required></div>
+            <div class="field"><label for="policy-route">Destination</label><select id="policy-route" required></select></div>
+            <div class="field wide"><label for="policy-domains">Domains</label><textarea id="policy-domains" rows="4" placeholder="example.com&#10;*.example.net" spellcheck="false"></textarea></div>
+            <div class="field wide"><label for="policy-networks">IPv4 networks</label><textarea id="policy-networks" rows="4" placeholder="203.0.113.0/24&#10;198.51.100.20/32" spellcheck="false"></textarea></div>
+            <div><button id="policy-submit-button" class="button primary" type="submit">Create policy</button></div>
+          </form>
+          <p id="policy-error" class="form-error" role="alert"></p>
+        </section>
+
+        <section class="resource-section" aria-labelledby="policies-title">
+          <div class="section-heading"><div><h2 id="policies-title">Routing policies</h2><p>Domain results are added with DNS TTL-based expiration.</p></div></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Priority</th><th>Name</th><th>Matches</th><th>Destination</th><th>Status</th><th class="actions-column">Actions</th></tr></thead>
+              <tbody id="policy-rows"></tbody>
+            </table>
+            <div id="policy-empty" class="empty-state"><p>No destination policies configured.</p></div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="qr-dialog" class="dialog">
+    <div class="dialog-heading"><div><h2 id="qr-title">Client QR code</h2><p>Scan with an AWG 3-compatible client.</p></div><button id="close-qr-button" class="button secondary compact" type="button">Close</button></div>
+    <div class="qr-surface"><img id="qr-image" alt="Client configuration QR code"></div>
+  </dialog>
+</body>
+</html>
