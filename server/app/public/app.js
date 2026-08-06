@@ -163,7 +163,7 @@ function renderUpstreams(upstreams) {
     const row = document.createElement('tr');
     row.append(
       cell('Name', upstream.name, 'client-name'),
-      cell('Interface', `${upstream.interface} / table ${upstream.table}`, 'mono'),
+      cell('Interface', `${upstream.protocol || 'AWG'} · ${upstream.interface} / table ${upstream.table}`, 'mono'),
       cell('Endpoint', upstream.endpoint || '—', 'mono'),
       cell('Status', stateBadge(upstream.status === 'up' ? 'Running' : upstream.status, statusStyle)),
       cell('Handshake', time(upstream.latestHandshakeAt), 'numeric'),

@@ -13,7 +13,8 @@ header-protection protocol. This local image builds on the pinned
 - Create, enable, disable, and delete clients in the Web UI.
 - Download AWG 3 profiles and display configuration QR codes.
 - Show latest handshake, endpoint, and transfer counters.
-- Import up to eight third-party AWG 3 client configs as upstream tunnels.
+- Import up to eight third-party AWG 3 or legacy AWG client configs as upstream
+  tunnels.
 - Route by domain or IPv4 CIDR to an upstream, directly to the server uplink,
   or to a fail-closed blocked destination.
 - Keep each upstream in a separate interface and policy-routing table.
@@ -82,7 +83,7 @@ not need public firewall access when using loopback binding.
 
 Open the **Routing** page after signing in. The normal setup sequence is:
 
-1. Import each provider's AWG 3 client `.conf` under **Upstream tunnels**.
+1. Import each provider's AWG client `.conf` under **Upstream tunnels**.
 2. Create policies containing domains, IPv4 networks, or both.
 3. Choose `Direct`, `Blocked`, or an imported upstream as the destination.
 4. Set the default route used when no policy matches.
@@ -91,12 +92,14 @@ Lower priority numbers win. A plain domain such as `example.com` matches the
 apex and its subdomains; `*.example.com` matches subdomains only. Networks use
 CIDR notation, for example `203.0.113.0/24` or `198.51.100.20/32`.
 
-Imported configs must have exactly one peer, an IPv4 interface address,
-`AllowedIPs = 0.0.0.0/0`, and the AWG 3 header-protection fields. Hook commands
-and executable `wg-quick` directives are rejected. The upstream endpoint must
-be an IPv4 address or hostname. If an enabled upstream is unavailable, its
-routing table contains a `prohibit default`; matching traffic fails closed
-instead of escaping through the server's normal uplink.
+Imported configs must have exactly one peer, an IPv4 interface address, the
+complete AWG parameter set for their protocol version, and
+`AllowedIPs = 0.0.0.0/0`. AWG 3 profiles additionally require the
+header-protection key and `S3`/`S4`. Hook commands and executable `wg-quick`
+directives are rejected. The upstream endpoint must be an IPv4 address or
+hostname. If an enabled upstream is unavailable, its routing table contains a
+`prohibit default`; matching traffic fails closed instead of escaping through
+the server's normal uplink.
 
 Domain rules are implemented by the container's DNS proxy. Client UDP and TCP
 port 53 traffic is redirected to it, even if an external resolver is present

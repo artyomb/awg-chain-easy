@@ -147,11 +147,18 @@ class RoutingManager {
   validateUpstreamConfig(config) {
     if (typeof config !== 'string' || config.length < 80 || config.length > 131072) throw httpError('Upstream config must contain 80-131072 characters');
     const parsed = parseIni(config);
-    const requiredInterface = ['PrivateKey', 'Address', 'HeaderProtectionKey', 'S1', 'S2', 'S3', 'S4'];
+    const requiredInterface = ['PrivateKey', 'Address', 'Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
     const requiredPeer = ['PublicKey', 'Endpoint', 'AllowedIPs'];
     for (const key of requiredInterface) if (!parsed.Interface[key]) throw httpError(`Upstream config is missing Interface ${key}`);
     for (const key of requiredPeer) if (!parsed.Peer[key]) throw httpError(`Upstream config is missing Peer ${key}`);
-    for (const key of ['S1', 'S2', 'S3', 'S4']) if (!/^\d+$/.test(parsed.Interface[key]) || Number(parsed.Interface[key]) < 12) throw httpError(`AWG 3 requires ${key} to be at least 12`);
+    const v3Fields = ['HeaderProtectionKey', 'S3', 'S4'];
+    const isV3 = v3Fields.some((key) => parsed.Interface[key]);
+    if (isV3) {
+      for (const key of v3Fields) if (!parsed.Interface[key]) throw httpError(`AWG 3 upstream config is missing Interface ${key}`);
+      for (const key of ['S1', 'S2', 'S3', 'S4']) if (!/^\d+$/.test(parsed.Interface[key]) || Number(parsed.Interface[key]) < 12) throw httpError(`AWG 3 requires ${key} to be at least 12`);
+    } else {
+      for (const key of ['S1', 'S2']) if (!/^\d+$/.test(parsed.Interface[key])) throw httpError(`Legacy AWG upstream ${key} must be an unsigned integer`);
+    }
     const address = parsed.Interface.Address.split(',').map((item) => item.trim()).find((item) => /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(item));
     if (!address) throw httpError('Upstream config requires an IPv4 Interface Address');
     validateNetwork(address);
@@ -163,7 +170,7 @@ class RoutingManager {
     }
     const mtu = parsed.Interface.MTU ? Number(parsed.Interface.MTU) : this.mtu;
     if (!Number.isInteger(mtu) || mtu < 576 || mtu > 9000) throw httpError('Upstream MTU is invalid');
-    return { parsed, address, mtu };
+    return { parsed, address, mtu, protocol: isV3 ? 'AWG3' : 'AWG' };
   }
 
   async validateWithAwgQuick(config) {
@@ -381,11 +388,11 @@ class RoutingManager {
       const cleanName = String(name || '').trim();
       if (!cleanName || cleanName.length > 64) throw httpError('Upstream name must contain 1-64 characters');
       if (Object.values(this.state.upstreams).some((item) => item.name.toLowerCase() === cleanName.toLowerCase())) throw httpError('Upstream name already exists', 409);
-      this.validateUpstreamConfig(config);
+      const details = this.validateUpstreamConfig(config);
       await this.validateWithAwgQuick(config);
       const slot = this.allocateSlot();
       const id = crypto.randomUUID();
-      const upstream = { id, name: cleanName, enabled: true, slot, interface: `au${slot}`, table: 201 + slot, mark: `0x${(0x201 + slot).toString(16)}`, createdAt: new Date().toISOString() };
+      const upstream = { id, name: cleanName, protocol: details.protocol, enabled: true, slot, interface: `au${slot}`, table: 201 + slot, mark: `0x${(0x201 + slot).toString(16)}`, createdAt: new Date().toISOString() };
       await atomicWrite(this.configPath(id), config.endsWith('\n') ? config : `${config}\n`);
       this.state.upstreams[id] = upstream;
       await this.save();
