@@ -65,6 +65,11 @@ AWG2_PORT=51822
 AWG2_CONFIG_PORT=51822
 AWG2_DEFAULT_ADDRESS=10.8.4.x
 AWG2_DEFAULT_DNS=auto
+AWG2_JMIN=10
+AWG2_JMAX=50
+AWG2_S3=19
+AWG2_S4=4
+AWG2_I1='<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>'
 WG_ALLOWED_IPS=0.0.0.0/0
 WG_PERSISTENT_KEEPALIVE=25
 WG_MTU=1280
@@ -144,6 +149,10 @@ Treat the entire directory as secret and back it up securely. Existing version
 3 AWG Chain Easy state is migrated automatically: current clients remain AWG3,
 and an independent AWG2 server identity is generated. This does not import the
 unrelated state format used by upstream AWG Easy V2 installations.
+
+Version 4 state is also upgraded automatically without rotating keys. The AWG2
+interface and exported AWG2 clients receive the mobile-oriented defaults
+`Jmin=10`, `Jmax=50`, `S3=19`, `S4=4`, and a DNS-shaped `I1` signature packet.
 
 ## Operations
 

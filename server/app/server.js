@@ -19,6 +19,7 @@ const PROTOCOLS = {
   AWG2: { interface: 'awg2', config: LEGACY_SERVER_CONF },
 };
 const PASSWORD_FILE = '/tmp/awg-chain-easy.htpasswd';
+const DNS_SIGNATURE_PACKET = '<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>';
 
 function env(name, fallback) {
   const value = process.env[name];
@@ -41,7 +42,7 @@ const settings = {
   legacyAddressPattern: env('AWG2_DEFAULT_ADDRESS', '10.8.4.x'),
   legacyDns: env('AWG2_DEFAULT_DNS', 'auto'),
   dns: env('WG_DEFAULT_DNS', 'auto'),
-  allowedIps: env('WG_ALLOWED_IPS', '0.0.0.0/0,::/0'),
+  allowedIps: env('WG_ALLOWED_IPS', '0.0.0.0/0'),
   persistentKeepalive: integerEnv('WG_PERSISTENT_KEEPALIVE', 25, 0, 65535),
   mtu: integerEnv('WG_MTU', 1280, 576, 9000),
   uiPort: integerEnv('PORT', 51821, 1, 65535),
@@ -107,23 +108,24 @@ function randomRange(start, size) {
 
 function initialServer(protocol = 'AWG3') {
   const privateKey = generatePrivateKey();
-  const numeric = (name, fallback) => integerEnv(name, fallback, 0, 4_294_967_295);
+  const legacy = protocol === 'AWG2';
+  const numeric = (name, fallback) => integerEnv(`${legacy ? 'AWG2_' : ''}${name}`, fallback, 0, 4_294_967_295);
   const server = {
     privateKey,
     publicKey: publicKey(privateKey),
     address: `${protocol === 'AWG3' ? networkPrefix : legacyNetworkPrefix}.1`,
     jc: numeric('JC', 6),
-    jmin: numeric('JMIN', 64),
-    jmax: numeric('JMAX', 128),
+    jmin: numeric('JMIN', legacy ? 10 : 64),
+    jmax: numeric('JMAX', legacy ? 50 : 128),
     s1: numeric('S1', 64),
     s2: numeric('S2', 56),
-    s3: protocol === 'AWG3' ? numeric('S3', 32) : undefined,
-    s4: protocol === 'AWG3' ? numeric('S4', 16) : undefined,
+    s3: numeric('S3', legacy ? 19 : 32),
+    s4: numeric('S4', legacy ? 4 : 16),
     h1: randomRange(100_000_000, 700_000_000),
     h2: randomRange(1_100_000_000, 700_000_000),
     h3: randomRange(2_100_000_000, 700_000_000),
     h4: randomRange(3_100_000_000, 700_000_000),
-    i1: protocol === 'AWG3' ? env('I1', '<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>') : env('AWG2_I1', ''),
+    i1: env(legacy ? 'AWG2_I1' : 'I1', DNS_SIGNATURE_PACKET),
     headerProtectionKey: protocol === 'AWG3' ? generatePrivateKey() : undefined,
     contentPaddingAddition: env('CONTENT_PADDING_ADDITION', '0-32'),
     rekeyAfterTime: env('REKEY_AFTER_TIME', '110-130'),
@@ -137,6 +139,15 @@ function initialServer(protocol = 'AWG3') {
   return server;
 }
 
+function upgradeLegacyServer(server) {
+  server.jmin = integerEnv('AWG2_JMIN', 10, 0, 4_294_967_295);
+  server.jmax = integerEnv('AWG2_JMAX', 50, 0, 4_294_967_295);
+  server.s3 = integerEnv('AWG2_S3', 19, 0, 4_294_967_295);
+  server.s4 = integerEnv('AWG2_S4', 4, 0, 4_294_967_295);
+  server.i1 = env('AWG2_I1', DNS_SIGNATURE_PACKET);
+  if (server.jmin > server.jmax || server.jmax >= settings.mtu) throw new Error('Require AWG2_JMIN <= AWG2_JMAX < WG_MTU');
+}
+
 async function atomicWrite(file, content, mode = 0o600) {
   const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
   await fsp.writeFile(temporary, content, { mode });
@@ -146,7 +157,7 @@ async function atomicWrite(file, content, mode = 0o600) {
 async function loadState() {
   try {
     const parsed = JSON.parse(await fsp.readFile(STATE_FILE, 'utf8'));
-    if (![3, 4].includes(parsed.version) || !parsed.server?.headerProtectionKey || !parsed.clients) {
+    if (![3, 4, 5].includes(parsed.version) || !parsed.server?.headerProtectionKey || !parsed.clients) {
       throw new Error('Existing wg0.json is not an AWG 3 state file; migrate it manually or use an empty CONFIG_DIR');
     }
     if (parsed.version === 3) {
@@ -155,11 +166,15 @@ async function loadState() {
       for (const client of Object.values(parsed.clients)) client.protocol = 'AWG3';
     }
     if (!parsed.legacyServer) parsed.legacyServer = initialServer('AWG2');
+    if (parsed.version < 5) {
+      upgradeLegacyServer(parsed.legacyServer);
+      parsed.version = 5;
+    }
     for (const client of Object.values(parsed.clients)) client.protocol ||= 'AWG3';
     return parsed;
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
-    return { version: 4, server: initialServer('AWG3'), legacyServer: initialServer('AWG2'), clients: {} };
+    return { version: 5, server: initialServer('AWG3'), legacyServer: initialServer('AWG2'), clients: {} };
   }
 }
 
@@ -170,6 +185,8 @@ function interfaceParameters(server, protocol) {
     `Jmax = ${server.jmax}`,
     `S1 = ${server.s1}`,
     `S2 = ${server.s2}`,
+    `S3 = ${server.s3}`,
+    `S4 = ${server.s4}`,
     `H1 = ${server.h1}`,
     `H2 = ${server.h2}`,
     `H3 = ${server.h3}`,
@@ -177,7 +194,6 @@ function interfaceParameters(server, protocol) {
   ];
   if (server.i1) parameters.push(`I1 = ${server.i1}`);
   if (protocol === 'AWG3') parameters.push(
-    `S3 = ${server.s3}`, `S4 = ${server.s4}`,
     `HeaderProtectionKey = ${server.headerProtectionKey}`,
     `ContentPaddingAddition = ${server.contentPaddingAddition}`,
     `RekeyAfterTime = ${server.rekeyAfterTime}`, `RekeyTimeout = ${server.rekeyTimeout}`,
