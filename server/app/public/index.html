@@ -37,7 +37,7 @@
       <div class="page-heading">
         <div>
           <h1>Clients</h1>
-          <p>Manage AWG3 and legacy AWG2 access profiles and connection state.</p>
+          <p>Manage AWG3, legacy AWG2, and native WireGuard access profiles and connection state.</p>
         </div>
         <button id="new-client-button" class="button primary" type="button">New client</button>
       </div>
@@ -61,7 +61,7 @@
         </div>
         <form id="create-form" class="inline-form">
           <div class="field"><label for="client-name">Name</label><input id="client-name" name="name" maxlength="64" autocomplete="off" required></div>
-          <div class="field"><label for="client-protocol">Protocol</label><select id="client-protocol" name="protocol"><option value="AWG3">AWG3</option><option value="AWG2">AWG2 (legacy/mobile)</option></select></div>
+          <div class="field"><label for="client-protocol">Protocol</label><select id="client-protocol" name="protocol"><option value="AWG3">AWG3</option><option value="AWG2">AWG2 (legacy/mobile)</option><option value="WG">WireGuard (native)</option></select></div>
           <button class="button primary" type="submit">Create client</button>
         </form>
         <p id="create-error" class="form-error" role="alert"></p>
@@ -172,7 +172,7 @@
   </main>
 
   <dialog id="qr-dialog" class="dialog">
-    <div class="dialog-heading"><div><h2 id="qr-title">Client QR code</h2><p>Scan with a compatible AmneziaVPN client.</p></div><button id="close-qr-button" class="button secondary compact" type="button">Close</button></div>
+    <div class="dialog-heading"><div><h2 id="qr-title">Client QR code</h2><p>Scan with a client compatible with the selected protocol.</p></div><button id="close-qr-button" class="button secondary compact" type="button">Close</button></div>
     <div class="qr-surface"><img id="qr-image" alt="Client configuration QR code"></div>
   </dialog>
 </body>

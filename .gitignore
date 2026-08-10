@@ -1,3 +1,4 @@
 server/.env
 config/
-
+AGENTS.md
+**/.knowledge/

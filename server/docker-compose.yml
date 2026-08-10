@@ -4,6 +4,7 @@ services:
       context: .
       args:
         AWG_IMAGE: ${AWG_IMAGE:-amneziavpn/amneziawg-go:3.0.20260805}
+        WIREGUARD_GO_COMMIT: ${WIREGUARD_GO_COMMIT:-f333402bd9cbe0f3eeb02507bd14e23d7d639280}
     image: ${APP_IMAGE:-awg-chain-easy:local}
     container_name: ${CONTAINER_NAME:-awg-chain-easy}
     restart: unless-stopped
@@ -19,6 +20,7 @@ services:
     ports:
       - "${WG_PORT:-51820}:${WG_PORT:-51820}/udp"
       - "${AWG2_PORT:-51822}:${AWG2_PORT:-51822}/udp"
+      - "${NATIVE_WG_PORT:-51823}:${NATIVE_WG_PORT:-51823}/udp"
       - "${WEBUI_BIND_ADDRESS:-127.0.0.1}:${PORT:-51821}:${PORT:-51821}/tcp"
     environment:
       WG_HOST: ${WG_HOST:?Set WG_HOST in .env}
@@ -38,6 +40,10 @@ services:
       AWG2_S3: ${AWG2_S3:-19}
       AWG2_S4: ${AWG2_S4:-4}
       AWG2_I1: ${AWG2_I1:-<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>}
+      NATIVE_WG_PORT: ${NATIVE_WG_PORT:-51823}
+      NATIVE_WG_CONFIG_PORT: ${NATIVE_WG_CONFIG_PORT:-51823}
+      NATIVE_WG_DEFAULT_ADDRESS: ${NATIVE_WG_DEFAULT_ADDRESS:-10.8.5.x}
+      NATIVE_WG_DEFAULT_DNS: ${NATIVE_WG_DEFAULT_DNS:-auto}
       WG_ALLOWED_IPS: ${WG_ALLOWED_IPS:-0.0.0.0/0}
       WG_PERSISTENT_KEEPALIVE: ${WG_PERSISTENT_KEEPALIVE:-25}
       WG_MTU: ${WG_MTU:-1280}

@@ -23,7 +23,7 @@ main() {
     status)
       load_env; ensure_docker; compose ps
       if compose ps --status running --services | grep -Fxq awg-chain-easy; then
-        compose exec -T awg-chain-easy sh -c 'awg show awg3; awg show awg2' | sed -E \
+        compose exec -T awg-chain-easy sh -c 'awg show awg3; awg show awg2; wg show wg-native' | sed -E \
           -e 's/(private key: ).*/\1(hidden)/' \
           -e 's/(preshared key: ).*/\1(hidden)/' \
           -e 's/(header protection key: ).*/\1(hidden)/'
@@ -41,7 +41,7 @@ main() {
       ;;
     version)
       load_env; ensure_docker
-      compose run --rm --no-deps --entrypoint sh awg-chain-easy -lc 'node --version; amneziawg-go --version 2>/dev/null || true; awg --version'
+      compose run --rm --no-deps --entrypoint sh awg-chain-easy -lc 'node --version; amneziawg-go --version 2>/dev/null || true; awg --version; wireguard-go --version 2>/dev/null || true; wg --version'
       ;;
     config) load_env; ensure_docker; compose config ;;
     -h|--help|help|'') usage ;;

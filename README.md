@@ -1,8 +1,9 @@
 # AWG Chain Easy
 
 `server` recreates the operating model of
-`ghcr.io/gennadykataev/awg-easy` with AWG3 and legacy AWG2 inbounds: one
-container runs both userspace tunnels and an authenticated browser UI.
+`ghcr.io/gennadykataev/awg-easy` with AWG3, legacy AWG2, and native WireGuard
+inbounds: one container runs all three userspace tunnels and an authenticated
+browser UI.
 
 It does not run the original image because that project predates the AWG 3
 header-protection protocol. This local image builds on the pinned
@@ -11,14 +12,14 @@ header-protection protocol. This local image builds on the pinned
 ## Features
 
 - Create, enable, disable, and delete clients in the Web UI.
-- Create and download AWG3 or AWG2 profiles and display configuration QR codes.
+- Create and download AWG3, AWG2, or native WireGuard profiles and display configuration QR codes.
 - Show latest handshake, endpoint, and transfer counters.
 - Import up to eight third-party AWG 3 or legacy AWG client configs as upstream
   tunnels.
 - Route by domain or IPv4 CIDR to an upstream, directly to the server uplink,
   or to a fail-closed blocked destination.
 - Keep each upstream in a separate interface and policy-routing table.
-- Persist `wg0.json`, both generated server configs, keys, and exported profiles under `server/config`.
+- Persist `wg0.json`, all generated server configs, keys, and exported profiles under `server/config`.
 - Synchronize peer changes without restarting the tunnel.
 - Bcrypt password authentication, same-site sessions, login throttling, and
   security response headers.
@@ -70,6 +71,10 @@ AWG2_JMAX=50
 AWG2_S3=19
 AWG2_S4=4
 AWG2_I1='<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>'
+NATIVE_WG_PORT=51823
+NATIVE_WG_CONFIG_PORT=51823
+NATIVE_WG_DEFAULT_ADDRESS=10.8.5.x
+NATIVE_WG_DEFAULT_DNS=auto
 WG_ALLOWED_IPS=0.0.0.0/0
 WG_PERSISTENT_KEEPALIVE=25
 WG_MTU=1280
@@ -83,11 +88,14 @@ WG_PORT=41725
 WG_CONFIG_PORT=41725
 AWG2_PORT=41726
 AWG2_CONFIG_PORT=41726
+NATIVE_WG_PORT=41727
+NATIVE_WG_CONFIG_PORT=41727
 PORT=51821
 ```
 
 After changing build inputs, run `./manage.sh up`; it rebuilds the local image
-when necessary. Firewall rules must allow `WG_PORT/udp` and `AWG2_PORT/udp`.
+when necessary. Firewall rules must allow `WG_PORT/udp`, `AWG2_PORT/udp`, and
+`NATIVE_WG_PORT/udp`.
 The UI TCP port does
 not need public firewall access when using loopback binding.
 
@@ -140,6 +148,7 @@ config/
   wg0.json             # server and client metadata, including private keys
   wg0.conf             # generated AWG3 server configuration
   wg2.conf             # generated AWG2 server configuration
+  wg-native.conf       # generated native WireGuard server configuration
   clients/*.conf       # generated client exports
   routing.json         # upstream metadata and destination policies
   upstreams/*.conf     # imported upstream profiles, including private keys
@@ -153,6 +162,10 @@ unrelated state format used by upstream AWG Easy V2 installations.
 Version 4 state is also upgraded automatically without rotating keys. The AWG2
 interface and exported AWG2 clients receive the mobile-oriented defaults
 `Jmin=10`, `Jmax=50`, `S3=19`, `S4=4`, and a DNS-shaped `I1` signature packet.
+
+Version 5 state is upgraded automatically to version 6 without rotating AWG
+keys. The upgrade creates an independent native WireGuard server identity;
+existing clients keep their original protocol.
 
 ## Operations
 

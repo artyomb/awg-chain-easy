@@ -12,11 +12,13 @@ const DATA_DIR = '/etc/wireguard';
 const STATE_FILE = path.join(DATA_DIR, 'wg0.json');
 const SERVER_CONF = path.join(DATA_DIR, 'wg0.conf');
 const LEGACY_SERVER_CONF = path.join(DATA_DIR, 'wg2.conf');
+const NATIVE_SERVER_CONF = path.join(DATA_DIR, 'wg-native.conf');
 const CLIENT_DIR = path.join(DATA_DIR, 'clients');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PROTOCOLS = {
-  AWG3: { interface: 'awg3', config: SERVER_CONF },
-  AWG2: { interface: 'awg2', config: LEGACY_SERVER_CONF },
+  AWG3: { interface: 'awg3', config: SERVER_CONF, command: 'awg', quick: 'awg-quick' },
+  AWG2: { interface: 'awg2', config: LEGACY_SERVER_CONF, command: 'awg', quick: 'awg-quick' },
+  WG: { interface: 'wg-native', config: NATIVE_SERVER_CONF, command: 'wg', quick: 'wg-quick' },
 };
 const PASSWORD_FILE = '/tmp/awg-chain-easy.htpasswd';
 const DNS_SIGNATURE_PACKET = '<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>';
@@ -41,6 +43,10 @@ const settings = {
   legacyConfigPort: integerEnv('AWG2_CONFIG_PORT', env('AWG2_PORT', 51822), 1, 65535),
   legacyAddressPattern: env('AWG2_DEFAULT_ADDRESS', '10.8.4.x'),
   legacyDns: env('AWG2_DEFAULT_DNS', 'auto'),
+  nativePort: integerEnv('NATIVE_WG_PORT', 51823, 1, 65535),
+  nativeConfigPort: integerEnv('NATIVE_WG_CONFIG_PORT', env('NATIVE_WG_PORT', 51823), 1, 65535),
+  nativeAddressPattern: env('NATIVE_WG_DEFAULT_ADDRESS', '10.8.5.x'),
+  nativeDns: env('NATIVE_WG_DEFAULT_DNS', 'auto'),
   dns: env('WG_DEFAULT_DNS', 'auto'),
   allowedIps: env('WG_ALLOWED_IPS', '0.0.0.0/0'),
   persistentKeepalive: integerEnv('WG_PERSISTENT_KEEPALIVE', 25, 0, 65535),
@@ -61,10 +67,16 @@ function parseAddressPattern(name, value) {
 if (!settings.host) throw new Error('WG_HOST is required');
 const networkPrefix = parseAddressPattern('WG_DEFAULT_ADDRESS', settings.addressPattern);
 const legacyNetworkPrefix = parseAddressPattern('AWG2_DEFAULT_ADDRESS', settings.legacyAddressPattern);
-if (networkPrefix === legacyNetworkPrefix) throw new Error('WG_DEFAULT_ADDRESS and AWG2_DEFAULT_ADDRESS must use different /24 networks');
-if (settings.port === settings.legacyPort) throw new Error('WG_PORT and AWG2_PORT must be different');
+const nativeNetworkPrefix = parseAddressPattern('NATIVE_WG_DEFAULT_ADDRESS', settings.nativeAddressPattern);
+if (new Set([networkPrefix, legacyNetworkPrefix, nativeNetworkPrefix]).size !== 3) {
+  throw new Error('WG_DEFAULT_ADDRESS, AWG2_DEFAULT_ADDRESS, and NATIVE_WG_DEFAULT_ADDRESS must use different /24 networks');
+}
+if (new Set([settings.port, settings.legacyPort, settings.nativePort]).size !== 3) {
+  throw new Error('WG_PORT, AWG2_PORT, and NATIVE_WG_PORT must be different');
+}
 if (settings.dns === 'auto') settings.dns = `${networkPrefix}.1`;
 if (settings.legacyDns === 'auto') settings.legacyDns = `${legacyNetworkPrefix}.1`;
+if (settings.nativeDns === 'auto') settings.nativeDns = `${nativeNetworkPrefix}.1`;
 if (settings.dnsTtlMin > settings.dnsTtlMax) throw new Error('DNS_TTL_MIN must not exceed DNS_TTL_MAX');
 if (ipv4ToNumberForSettings(settings.dnsUpstream) === null) throw new Error('DNS_UPSTREAM must be an IPv4 address');
 
@@ -93,12 +105,16 @@ function passwordMatches(password) {
   return result.status === 0;
 }
 
-function generatePrivateKey() {
-  return command('awg', ['genkey']);
+function protocolCommand(protocol) {
+  return PROTOCOLS[protocol]?.command || 'awg';
 }
 
-function publicKey(privateKey) {
-  return command('awg', ['pubkey'], `${privateKey}\n`);
+function generatePrivateKey(protocol = 'AWG3') {
+  return command(protocolCommand(protocol), ['genkey']);
+}
+
+function publicKey(privateKey, protocol = 'AWG3') {
+  return command(protocolCommand(protocol), ['pubkey'], `${privateKey}\n`);
 }
 
 function randomRange(start, size) {
@@ -107,12 +123,19 @@ function randomRange(start, size) {
 }
 
 function initialServer(protocol = 'AWG3') {
-  const privateKey = generatePrivateKey();
+  const privateKey = generatePrivateKey(protocol);
+  if (protocol === 'WG') {
+    return {
+      privateKey,
+      publicKey: publicKey(privateKey, protocol),
+      address: `${nativeNetworkPrefix}.1`,
+    };
+  }
   const legacy = protocol === 'AWG2';
   const numeric = (name, fallback) => integerEnv(`${legacy ? 'AWG2_' : ''}${name}`, fallback, 0, 4_294_967_295);
   const server = {
     privateKey,
-    publicKey: publicKey(privateKey),
+    publicKey: publicKey(privateKey, protocol),
     address: `${protocol === 'AWG3' ? networkPrefix : legacyNetworkPrefix}.1`,
     jc: numeric('JC', 6),
     jmin: numeric('JMIN', legacy ? 10 : 64),
@@ -157,7 +180,7 @@ async function atomicWrite(file, content, mode = 0o600) {
 async function loadState() {
   try {
     const parsed = JSON.parse(await fsp.readFile(STATE_FILE, 'utf8'));
-    if (![3, 4, 5].includes(parsed.version) || !parsed.server?.headerProtectionKey || !parsed.clients) {
+    if (![3, 4, 5, 6].includes(parsed.version) || !parsed.server?.headerProtectionKey || !parsed.clients) {
       throw new Error('Existing wg0.json is not an AWG 3 state file; migrate it manually or use an empty CONFIG_DIR');
     }
     if (parsed.version === 3) {
@@ -170,15 +193,21 @@ async function loadState() {
       upgradeLegacyServer(parsed.legacyServer);
       parsed.version = 5;
     }
+    if (parsed.version < 6) {
+      parsed.nativeServer = initialServer('WG');
+      parsed.version = 6;
+    }
+    if (!parsed.nativeServer?.privateKey || !parsed.nativeServer?.publicKey) throw new Error('Native WireGuard server identity is missing');
     for (const client of Object.values(parsed.clients)) client.protocol ||= 'AWG3';
     return parsed;
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
-    return { version: 5, server: initialServer('AWG3'), legacyServer: initialServer('AWG2'), clients: {} };
+    return { version: 6, server: initialServer('AWG3'), legacyServer: initialServer('AWG2'), nativeServer: initialServer('WG'), clients: {} };
   }
 }
 
 function interfaceParameters(server, protocol) {
+  if (protocol === 'WG') return '';
   const parameters = [
     `Jc = ${server.jc}`,
     `Jmin = ${server.jmin}`,
@@ -203,11 +232,15 @@ function interfaceParameters(server, protocol) {
   return parameters.join('\n');
 }
 
-function serverFor(stateValue, protocol) { return protocol === 'AWG2' ? stateValue.legacyServer : stateValue.server; }
+function serverFor(stateValue, protocol) {
+  if (protocol === 'AWG2') return stateValue.legacyServer;
+  if (protocol === 'WG') return stateValue.nativeServer;
+  return stateValue.server;
+}
 function protocolSettings(protocol) {
-  return protocol === 'AWG2'
-    ? { port: settings.legacyPort, configPort: settings.legacyConfigPort, dns: settings.legacyDns, prefix: legacyNetworkPrefix }
-    : { port: settings.port, configPort: settings.configPort, dns: settings.dns, prefix: networkPrefix };
+  if (protocol === 'AWG2') return { port: settings.legacyPort, configPort: settings.legacyConfigPort, dns: settings.legacyDns, prefix: legacyNetworkPrefix };
+  if (protocol === 'WG') return { port: settings.nativePort, configPort: settings.nativeConfigPort, dns: settings.nativeDns, prefix: nativeNetworkPrefix };
+  return { port: settings.port, configPort: settings.configPort, dns: settings.dns, prefix: networkPrefix };
 }
 function endpoint(protocol) {
   const port = protocolSettings(protocol).configPort;
@@ -227,6 +260,11 @@ function safeName(name) {
   return name.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'client';
 }
 
+function clientFilename(client) {
+  if (client.protocol === 'WG') return `${safeName(client.name).slice(0, 6)}-${client.id.slice(0, 8)}.conf`;
+  return `${safeName(client.name)}-${client.id.slice(0, 8)}.conf`;
+}
+
 async function writeArtifacts(state) {
   await fsp.mkdir(DATA_DIR, { recursive: true, mode: 0o700 });
   await fsp.mkdir(CLIENT_DIR, { recursive: true, mode: 0o700 });
@@ -244,7 +282,7 @@ async function writeArtifacts(state) {
 
   const expected = new Set();
   for (const client of Object.values(state.clients)) {
-    const filename = `${safeName(client.name)}-${client.id.slice(0, 8)}.conf`;
+    const filename = clientFilename(client);
     expected.add(filename);
     await atomicWrite(path.join(CLIENT_DIR, filename), clientConfiguration(state, client));
   }
@@ -255,10 +293,10 @@ async function writeArtifacts(state) {
 
 function syncRuntime(state) {
   for (const [protocol, definition] of Object.entries(PROTOCOLS)) {
-    const stripped = command('awg-quick', ['strip', definition.config]);
+    const stripped = command(definition.quick, ['strip', definition.config]);
     const syncFile = `/tmp/awg-chain-easy-sync-${definition.interface}-${process.pid}.conf`;
     fs.writeFileSync(syncFile, `${stripped}\n`, { mode: 0o600 });
-    try { command('awg', ['syncconf', definition.interface, syncFile]); } finally { fs.unlinkSync(syncFile); }
+    try { command(definition.command, ['syncconf', definition.interface, syncFile]); } finally { fs.unlinkSync(syncFile); }
     spawnSync('ip', ['-4', 'route', 'flush', 'dev', definition.interface, 'proto', 'static']);
     for (const client of Object.values(state.clients).filter((item) => item.enabled && (item.protocol || 'AWG3') === protocol)) {
       command('ip', ['-4', 'route', 'replace', `${client.address}/32`, 'dev', definition.interface, 'proto', 'static']);
@@ -285,7 +323,7 @@ function runtimeStats() {
   const byKey = new Map();
   for (const definition of Object.values(PROTOCOLS)) {
     try {
-      const lines = command('awg', ['show', definition.interface, 'dump']).split('\n').slice(1);
+      const lines = command(definition.command, ['show', definition.interface, 'dump']).split('\n').slice(1);
       for (const line of lines) {
         const [key, , endpointValue, , handshake, received, sent] = line.split('\t');
         byKey.set(key, {
@@ -380,7 +418,7 @@ async function api(request, response, url) {
   if (url.pathname === '/api/health') {
     const tunnels = {};
     for (const [protocol, definition] of Object.entries(PROTOCOLS)) {
-      try { command('awg', ['show', definition.interface]); tunnels[protocol] = 'up'; } catch (_) { tunnels[protocol] = 'down'; }
+      try { command(definition.command, ['show', definition.interface]); tunnels[protocol] = 'up'; } catch (_) { tunnels[protocol] = 'down'; }
     }
     const healthy = Object.values(tunnels).every((value) => value === 'up');
     return send(response, healthy ? 200 : 503, { status: healthy ? 'healthy' : 'starting', protocols: tunnels, routing: routing ? 'ready' : 'starting' });
@@ -420,10 +458,10 @@ async function api(request, response, url) {
   if (url.pathname === '/api/wireguard/status' && request.method === 'GET') {
     const clients = publicClients();
     return send(response, 200, {
-      protocols: ['AWG3', 'AWG2'],
-      endpoint: `AWG3 ${endpoint('AWG3')} · AWG2 ${endpoint('AWG2')}`,
-      endpoints: { AWG3: endpoint('AWG3'), AWG2: endpoint('AWG2') },
-      addresses: { AWG3: `${state.server.address}/24`, AWG2: `${state.legacyServer.address}/24` },
+      protocols: Object.keys(PROTOCOLS),
+      endpoint: Object.keys(PROTOCOLS).map((protocol) => `${protocol} ${endpoint(protocol)}`).join(' · '),
+      endpoints: Object.fromEntries(Object.keys(PROTOCOLS).map((protocol) => [protocol, endpoint(protocol)])),
+      addresses: Object.fromEntries(Object.keys(PROTOCOLS).map((protocol) => [protocol, `${serverFor(state, protocol).address}/24`])),
       clients: clients.length, enabled: clients.filter((client) => client.enabled).length,
       connected: clients.filter((client) => client.latestHandshakeAt && Date.now() - Date.parse(client.latestHandshakeAt) < 180_000).length,
     });
@@ -432,7 +470,7 @@ async function api(request, response, url) {
   if (url.pathname === '/api/wireguard/client' && request.method === 'POST') {
     const { name, protocol = 'AWG3' } = await readJson(request);
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 64) throw Object.assign(new Error('Name must contain 1-64 characters'), { status: 400 });
-    if (!Object.hasOwn(PROTOCOLS, protocol)) throw Object.assign(new Error('Protocol must be AWG3 or AWG2'), { status: 400 });
+    if (!Object.hasOwn(PROTOCOLS, protocol)) throw Object.assign(new Error('Protocol must be AWG3, AWG2, or WG'), { status: 400 });
     if (Object.values(state.clients).some((client) => client.name.toLowerCase() === name.trim().toLowerCase())) throw Object.assign(new Error('Client name already exists'), { status: 409 });
     let address;
     for (let index = 2; index < 255; index += 1) {
@@ -440,10 +478,11 @@ async function api(request, response, url) {
       if (!Object.values(state.clients).some((client) => client.address === candidate)) { address = candidate; break; }
     }
     if (!address) throw Object.assign(new Error('Maximum number of clients reached'), { status: 409 });
-    const privateKey = generatePrivateKey();
+    const privateKey = generatePrivateKey(protocol);
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const client = { id, name: name.trim(), protocol, address, privateKey, publicKey: publicKey(privateKey), preSharedKey: command('awg', ['genpsk']), createdAt: now, updatedAt: now, enabled: true };
+    const keyCommand = protocolCommand(protocol);
+    const client = { id, name: name.trim(), protocol, address, privateKey, publicKey: publicKey(privateKey, protocol), preSharedKey: command(keyCommand, ['genpsk']), createdAt: now, updatedAt: now, enabled: true };
     await mutate(() => { state.clients[id] = client; });
     return send(response, 201, { id: client.id });
   }
@@ -499,7 +538,8 @@ async function api(request, response, url) {
   const client = clientById(match[1]);
   const action = match[2];
   if (request.method === 'GET' && action === 'configuration') {
-    return send(response, 200, clientConfiguration(state, client), 'text/plain; charset=utf-8', { 'Content-Disposition': `attachment; filename="${safeName(client.name)}.conf"` });
+    const filename = client.protocol === 'WG' ? clientFilename(client) : `${safeName(client.name)}.conf`;
+    return send(response, 200, clientConfiguration(state, client), 'text/plain; charset=utf-8', { 'Content-Disposition': `attachment; filename="${filename}"` });
   }
   if (request.method === 'GET' && action === 'qrcode.svg') {
     const svg = command('qrencode', ['-t', 'SVG', '-m', '2', '-s', '8', '-o', '-'], clientConfiguration(state, client));
@@ -547,7 +587,7 @@ async function main() {
   fs.writeFileSync(PASSWORD_FILE, `admin:${settings.passwordHash}\n`, { mode: 0o600 });
   routing = new RoutingManager({
     inboundInterfaces: Object.values(PROTOCOLS).map((item) => item.interface),
-    downstreamNetworks: [`${networkPrefix}.0/24`, `${legacyNetworkPrefix}.0/24`],
+    downstreamNetworks: [`${networkPrefix}.0/24`, `${legacyNetworkPrefix}.0/24`, `${nativeNetworkPrefix}.0/24`],
     mtu: settings.mtu,
     dnsUpstream: settings.dnsUpstream,
     dnsTtlMin: settings.dnsTtlMin,
