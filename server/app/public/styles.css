@@ -83,6 +83,7 @@ p { margin-bottom: 0; color: var(--color-text-muted); }
 .status-fact:last-child { border-right: 0; }
 .fact-label { display: block; margin-bottom: var(--space-1); color: var(--color-text-muted); font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
 .fact-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.fact-detail { display: block; margin-top: var(--space-1); color: var(--color-text-muted); font-size: 11px; }
 .numeric { font-variant-numeric: tabular-nums; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 

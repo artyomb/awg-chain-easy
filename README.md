@@ -7,13 +7,16 @@ browser UI.
 
 It does not run the original image because that project predates the AWG 3
 header-protection protocol. This local image builds on the pinned
-`amneziavpn/amneziawg-go:3.0.20260805` runtime and adds the management service.
+`amneziavpn/amneziawg-go:3.1.20260828` runtime and adds the management service.
+Existing AWG3 profiles continue to use their current settings; the optional
+3.1 `RandomTrailers` and `DisableCookies` settings are not enabled.
 
 ## Features
 
 - Create, enable, disable, and delete clients in the Web UI.
 - Create and download AWG3, AWG2, or native WireGuard profiles and display configuration QR codes.
 - Show latest handshake, endpoint, and transfer counters.
+- Show the running container's AmneziaWG server image version in the Web UI.
 - Import up to eight third-party AWG 3 or legacy AWG client configs as upstream
   tunnels.
 - Route by domain or IPv4 CIDR to an upstream, directly to the server uplink,
@@ -172,6 +175,7 @@ existing clients keep their original protocol.
 ```bash
 ./manage.sh clients
 ./manage.sh routing
+./manage.sh version
 ./manage.sh logs
 ./manage.sh restart
 ./manage.sh build
@@ -181,3 +185,6 @@ existing clients keep their original protocol.
 
 `down` removes the container and Compose network but preserves `server/config`.
 Changing the UI password requires a container restart.
+The `version` command shows the configured AWG image tag alongside versions
+from the locally built image. The upstream `amneziawg-go --version` banner in
+the `3.1.20260828` image still reports `0.0.20250522`.

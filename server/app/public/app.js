@@ -3,7 +3,7 @@
 const elements = Object.fromEntries([
   'login-view', 'app-view', 'logout-button', 'login-form', 'password', 'login-error',
   'new-client-button', 'create-panel', 'cancel-create-button', 'create-form', 'client-name', 'client-protocol',
-  'create-error', 'page-message', 'endpoint-value', 'client-count', 'connected-count',
+  'create-error', 'page-message', 'endpoint-value', 'client-count', 'connected-count', 'amneziawg-version',
   'client-rows', 'empty-state', 'empty-create-button', 'refresh-button', 'last-updated',
   'qr-dialog', 'qr-title', 'qr-image', 'close-qr-button',
   'primary-nav', 'clients-page', 'routing-page', 'new-upstream-button', 'new-policy-button',
@@ -278,6 +278,8 @@ async function refresh() {
     ]);
     elements['endpoint-value'].textContent = status.endpoint;
     elements['endpoint-value'].title = status.endpoint;
+    elements['amneziawg-version'].textContent = status.amneziawg?.version || 'Unknown';
+    elements['amneziawg-version'].title = status.amneziawg?.image || '';
     elements['client-count'].textContent = status.clients;
     elements['connected-count'].textContent = status.connected;
     elements['last-updated'].textContent = `Updated ${new Date().toLocaleTimeString()}`;

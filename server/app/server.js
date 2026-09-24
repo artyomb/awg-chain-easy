@@ -22,6 +22,8 @@ const PROTOCOLS = {
 };
 const PASSWORD_FILE = '/tmp/awg-chain-easy.htpasswd';
 const DNS_SIGNATURE_PACKET = '<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>';
+const amneziawgImage = process.env.AMNEZIAWG_IMAGE || '';
+const amneziawgVersion = amneziawgImage.split('@')[0].match(/:([^/:]+)$/)?.[1] || null;
 
 function env(name, fallback) {
   const value = process.env[name];
@@ -459,6 +461,7 @@ async function api(request, response, url) {
     const clients = publicClients();
     return send(response, 200, {
       protocols: Object.keys(PROTOCOLS),
+      amneziawg: { version: amneziawgVersion, image: amneziawgImage },
       endpoint: Object.keys(PROTOCOLS).map((protocol) => `${protocol} ${endpoint(protocol)}`).join(' · '),
       endpoints: Object.fromEntries(Object.keys(PROTOCOLS).map((protocol) => [protocol, endpoint(protocol)])),
       addresses: Object.fromEntries(Object.keys(PROTOCOLS).map((protocol) => [protocol, `${serverFor(state, protocol).address}/24`])),

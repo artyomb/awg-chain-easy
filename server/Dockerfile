@@ -1,4 +1,4 @@
-ARG AWG_IMAGE=amneziavpn/amneziawg-go:3.0.20260805
+ARG AWG_IMAGE=amneziavpn/amneziawg-go:3.1.20260828
 
 FROM golang:1.24-alpine3.21 AS wireguard-go-build
 
@@ -9,6 +9,8 @@ RUN apk add --no-cache git make \
     && make -C /src/wireguard-go
 
 FROM ${AWG_IMAGE}
+ARG AWG_IMAGE
+ENV AMNEZIAWG_IMAGE=${AWG_IMAGE}
 
 RUN apk add --no-cache nodejs apache2-utils libqrencode-tools nftables wireguard-tools
 COPY --from=wireguard-go-build /src/wireguard-go/wireguard-go /usr/local/bin/wireguard-go
