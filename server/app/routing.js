@@ -109,9 +109,10 @@ function shellNftString(value) {
 }
 
 class RoutingManager {
-  constructor({ inboundInterfaces, downstreamNetworks, mtu, dnsUpstream, dnsTtlMin, dnsTtlMax }) {
+  constructor({ inboundInterfaces, downstreamNetworks, downstreamAddresses, mtu, dnsUpstream, dnsTtlMin, dnsTtlMax }) {
     this.inboundInterfaces = inboundInterfaces;
     this.downstreamNetworks = downstreamNetworks;
+    this.downstreamAddresses = downstreamAddresses;
     this.mtu = mtu;
     this.dnsUpstream = dnsUpstream;
     this.dnsTtlMin = dnsTtlMin;
@@ -173,6 +174,38 @@ class RoutingManager {
     return { parsed, address, mtu, protocol: isV3 ? 'AWG3' : 'AWG' };
   }
 
+  reservedAddresses(excludeUpstreamId = null) {
+    const addresses = new Set(this.downstreamAddresses().map(ipv4ToNumber));
+    for (const upstream of Object.values(this.state.upstreams)) {
+      if (upstream.id === excludeUpstreamId) continue;
+      let address;
+      try {
+        const config = fs.readFileSync(this.configPath(upstream.id), 'utf8');
+        address = this.validateUpstreamConfig(config).address;
+      } catch (_) {
+        throw httpError('Cannot check reserved addresses: repair or delete the unreadable upstream configuration first.', 409);
+      }
+      addresses.add(ipv4ToNumber(address.split('/')[0]));
+    }
+    return addresses;
+  }
+
+  allocateClientAddress(prefix) {
+    const reserved = this.reservedAddresses();
+    for (let index = 2; index < 255; index += 1) {
+      const candidate = `${prefix}.${index}`;
+      if (!reserved.has(ipv4ToNumber(candidate))) return candidate;
+    }
+    throw httpError('No available IPv4 addresses remain in this client pool.', 409);
+  }
+
+  assertUpstreamAddressAvailable(address, excludeUpstreamId = null) {
+    const host = address.split('/')[0];
+    if (this.reservedAddresses(excludeUpstreamId).has(ipv4ToNumber(host))) {
+      throw httpError(`Upstream address ${host} is already used by a server, client, or another upstream. Use a different address.`, 409);
+    }
+  }
+
   async validateWithAwgQuick(config) {
     const temporary = `/tmp/av${crypto.randomBytes(4).toString('hex')}.conf`;
     await fsp.writeFile(temporary, config, { mode: 0o600 });
@@ -225,6 +258,7 @@ class RoutingManager {
     if (this.runtime.get(upstream.id)?.status === 'up') return;
     const config = await fsp.readFile(this.configPath(upstream.id), 'utf8');
     const details = this.validateUpstreamConfig(config);
+    this.assertUpstreamAddressAvailable(details.address, upstream.id);
     tryRun('ip', ['link', 'delete', 'dev', upstream.interface]);
     await fsp.unlink(`/var/run/amneziawg/${upstream.interface}.sock`).catch(() => {});
     const child = spawn('amneziawg-go', ['-f', upstream.interface], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -394,6 +428,7 @@ class RoutingManager {
       if (!cleanName || cleanName.length > 64) throw httpError('Upstream name must contain 1-64 characters');
       if (Object.values(this.state.upstreams).some((item) => item.name.toLowerCase() === cleanName.toLowerCase())) throw httpError('Upstream name already exists', 409);
       const details = this.validateUpstreamConfig(config);
+      this.assertUpstreamAddressAvailable(details.address);
       await this.validateWithAwgQuick(config);
       const slot = this.allocateSlot();
       const id = crypto.randomUUID();
@@ -409,7 +444,7 @@ class RoutingManager {
         await this.save();
         await fsp.unlink(this.configPath(id)).catch(() => {});
         await this.reconcile();
-        throw httpError(`Unable to start upstream: ${error.message}`);
+        throw httpError(`Unable to start upstream: ${error.message}`, error.status || 400);
       }
       return upstream;
     });
@@ -425,7 +460,7 @@ class RoutingManager {
       } catch (error) {
         await this.save();
         await this.reconcile();
-        throw httpError(`Unable to start upstream: ${error.message}`);
+        throw httpError(`Unable to start upstream: ${error.message}`, error.status || 400);
       }
       await this.save();
       await this.reconcile();

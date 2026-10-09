@@ -307,18 +307,15 @@ function syncRuntime(state) {
 }
 
 let state;
-let mutation = Promise.resolve();
 let routing;
 let dnsProxy;
 
 function mutate(operation) {
-  const next = mutation.then(async () => {
+  return routing.enqueue(async () => {
     await operation();
     await writeArtifacts(state);
     syncRuntime(state);
   });
-  mutation = next.catch(() => {});
-  return next;
 }
 
 function runtimeStats() {
@@ -474,19 +471,17 @@ async function api(request, response, url) {
     const { name, protocol = 'AWG3' } = await readJson(request);
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 64) throw Object.assign(new Error('Name must contain 1-64 characters'), { status: 400 });
     if (!Object.hasOwn(PROTOCOLS, protocol)) throw Object.assign(new Error('Protocol must be AWG3, AWG2, or WG'), { status: 400 });
-    if (Object.values(state.clients).some((client) => client.name.toLowerCase() === name.trim().toLowerCase())) throw Object.assign(new Error('Client name already exists'), { status: 409 });
-    let address;
-    for (let index = 2; index < 255; index += 1) {
-      const candidate = `${protocolSettings(protocol).prefix}.${index}`;
-      if (!Object.values(state.clients).some((client) => client.address === candidate)) { address = candidate; break; }
-    }
-    if (!address) throw Object.assign(new Error('Maximum number of clients reached'), { status: 409 });
-    const privateKey = generatePrivateKey(protocol);
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    const keyCommand = protocolCommand(protocol);
-    const client = { id, name: name.trim(), protocol, address, privateKey, publicKey: publicKey(privateKey, protocol), preSharedKey: command(keyCommand, ['genpsk']), createdAt: now, updatedAt: now, enabled: true };
-    await mutate(() => { state.clients[id] = client; });
+    let client;
+    await mutate(() => {
+      if (Object.values(state.clients).some((item) => item.name.toLowerCase() === name.trim().toLowerCase())) throw Object.assign(new Error('Client name already exists'), { status: 409 });
+      const address = routing.allocateClientAddress(protocolSettings(protocol).prefix);
+      const privateKey = generatePrivateKey(protocol);
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      const keyCommand = protocolCommand(protocol);
+      client = { id, name: name.trim(), protocol, address, privateKey, publicKey: publicKey(privateKey, protocol), preSharedKey: command(keyCommand, ['genpsk']), createdAt: now, updatedAt: now, enabled: true };
+      state.clients[id] = client;
+    });
     return send(response, 201, { id: client.id });
   }
   if (url.pathname === '/api/wireguard/backup' && request.method === 'GET') {
@@ -591,6 +586,10 @@ async function main() {
   routing = new RoutingManager({
     inboundInterfaces: Object.values(PROTOCOLS).map((item) => item.interface),
     downstreamNetworks: [`${networkPrefix}.0/24`, `${legacyNetworkPrefix}.0/24`, `${nativeNetworkPrefix}.0/24`],
+    downstreamAddresses: () => [
+      ...Object.keys(PROTOCOLS).map((protocol) => serverFor(state, protocol).address),
+      ...Object.values(state.clients).map((client) => client.address),
+    ],
     mtu: settings.mtu,
     dnsUpstream: settings.dnsUpstream,
     dnsTtlMin: settings.dnsTtlMin,

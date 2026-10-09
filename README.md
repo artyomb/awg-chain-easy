@@ -124,6 +124,12 @@ hostname. If an enabled upstream is unavailable, its routing table contains a
 `prohibit default`; matching traffic fails closed instead of escaping through
 the server's normal uplink.
 
+Imported upstream interface addresses are reserved even while the upstream is
+disabled. New clients skip those addresses. Imports that reuse a server,
+client, or another upstream's interface address are rejected. When chaining
+servers, keep their interface addresses distinct; an existing collision must
+be corrected on both ends of the affected link before it can start.
+
 Domain rules are implemented by the container's DNS proxy. Client UDP and TCP
 port 53 traffic is redirected to it, even if an external resolver is present
 in an older client profile. Resolved IPv4 addresses enter the matching policy
@@ -188,3 +194,11 @@ Changing the UI password requires a container restart.
 The `version` command shows the configured AWG image tag alongside versions
 from the locally built image. The upstream `amneziawg-go --version` banner in
 the `3.1.20260828` image still reports `0.0.20250522`.
+
+## Regression checks
+
+Run `bash server/test/run.sh` from the repository root. It builds the image
+and tests client allocation and upstream collisions through the live API in
+an isolated container. Docker access and `/dev/net/tun` are required; production
+state is not mounted. Pass an existing image tag as the first argument to test
+that image without rebuilding it.
