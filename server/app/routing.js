@@ -7,6 +7,7 @@ const fsp = require('node:fs/promises');
 const net = require('node:net');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
+const { listenPort, portRange, withListenPort, connectionStatus } = require('./connections');
 
 const DATA_DIR = '/etc/wireguard';
 const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
@@ -109,8 +110,10 @@ function shellNftString(value) {
 }
 
 class RoutingManager {
-  constructor({ inboundInterfaces, downstreamNetworks, downstreamAddresses, mtu, dnsUpstream, dnsTtlMin, dnsTtlMax }) {
+  constructor({ inboundInterfaces, downstreamNetworks, downstreamAddresses, mtu, dnsUpstream, dnsTtlMin, dnsTtlMax, inboundPorts = [53, 51820, 51822, 51823], upstreamPorts = portRange() }) {
     this.inboundInterfaces = inboundInterfaces;
+    this.inboundPorts = inboundPorts;
+    this.upstreamPorts = upstreamPorts;
     this.downstreamNetworks = downstreamNetworks;
     this.downstreamAddresses = downstreamAddresses;
     this.mtu = mtu;
@@ -171,7 +174,8 @@ class RoutingManager {
     }
     const mtu = parsed.Interface.MTU ? Number(parsed.Interface.MTU) : this.mtu;
     if (!Number.isInteger(mtu) || mtu < 576 || mtu > 9000) throw httpError('Upstream MTU is invalid');
-    return { parsed, address, mtu, protocol: isV3 ? 'AWG3' : 'AWG' };
+    const port = listenPort(parsed.Interface.ListenPort);
+    return { parsed, address, mtu, listenPort: port, protocol: isV3 ? 'AWG3' : 'AWG' };
   }
 
   reservedAddresses(excludeUpstreamId = null) {
@@ -229,6 +233,55 @@ class RoutingManager {
     }
   }
 
+  assertUpstreamPortAvailable(port, excludeUpstreamId = null) {
+    if (!port) return;
+    if (this.inboundPorts.includes(port)) throw httpError('Upstream listen port conflicts with an inbound UDP listener', 409);
+    for (const upstream of Object.values(this.state.upstreams)) {
+      if (upstream.id === excludeUpstreamId) continue;
+      let saved;
+      try { saved = listenPort(parseIni(fs.readFileSync(this.configPath(upstream.id), 'utf8')).Interface.ListenPort); }
+      catch (_) { throw httpError('Cannot check reserved ports: repair or delete the unreadable upstream configuration first.', 409); }
+      if (saved === port || this.runtime.get(upstream.id)?.listenPort === port) {
+        throw httpError('Upstream listen port is already reserved by another upstream', 409);
+      }
+    }
+  }
+
+  validatePublishedPort(value) {
+    const port = listenPort(value);
+    if (port && !this.upstreamPorts.includes(port)) throw httpError('Fixed listen port must be in UPSTREAM_PORT_RANGE; update the Compose deployment to publish other ports');
+    return port;
+  }
+
+  async setUpstreamListenPort(id, value) {
+    return this.enqueue(async () => {
+      const upstream = this.state.upstreams[id];
+      if (!upstream) throw httpError('Upstream not found', 404);
+      const port = this.validatePublishedPort(value);
+      this.assertUpstreamPortAvailable(port, id);
+      const original = await fsp.readFile(this.configPath(id), 'utf8');
+      const config = withListenPort(original, port);
+      this.validateUpstreamConfig(config);
+      await this.validateWithAwgQuick(config);
+      if (listenPort(parseIni(original).Interface.ListenPort) === port) return;
+      try {
+        if (upstream.enabled) await this.stopUpstream(upstream);
+        await atomicWrite(this.configPath(id), config);
+        if (upstream.enabled) await this.startUpstream(upstream);
+        await this.reconcile();
+      } catch (error) {
+        await this.stopUpstream(upstream);
+        await atomicWrite(this.configPath(id), original);
+        if (upstream.enabled) {
+          try { await this.startUpstream(upstream); }
+          catch (_) { /* Runtime error is exposed in the upstream snapshot. */ }
+        }
+        await this.reconcile();
+        throw httpError(`Unable to update upstream listen port: ${error.message}`, error.status || 400);
+      }
+    });
+  }
+
   allocateSlot() {
     const used = new Set(Object.values(this.state.upstreams).map((item) => item.slot));
     for (let slot = 0; slot < MAX_UPSTREAMS; slot += 1) if (!used.has(slot)) return slot;
@@ -259,10 +312,13 @@ class RoutingManager {
     const config = await fsp.readFile(this.configPath(upstream.id), 'utf8');
     const details = this.validateUpstreamConfig(config);
     this.assertUpstreamAddressAvailable(details.address, upstream.id);
+    this.assertUpstreamPortAvailable(details.listenPort, upstream.id);
     tryRun('ip', ['link', 'delete', 'dev', upstream.interface]);
     await fsp.unlink(`/var/run/amneziawg/${upstream.interface}.sock`).catch(() => {});
     const child = spawn('amneziawg-go', ['-f', upstream.interface], { stdio: ['ignore', 'ignore', 'pipe'] });
-    const runtime = { child, status: 'starting', stopping: false, endpoint: null, error: null };
+    const rekey = String(details.parsed.Interface.RekeyAfterTime || '120').split('-').map(Number);
+    const runtime = { child, status: 'starting', stopping: false, endpoint: null, error: null, startedAt: Date.now(),
+      rekeyAfterTime: rekey.every(Number.isFinite) ? Math.max(...rekey) : 120 };
     this.runtime.set(upstream.id, runtime);
     let daemonError = '';
     child.stderr.on('data', (chunk) => { daemonError = `${daemonError}${chunk}`.slice(-2048); });
@@ -282,6 +338,7 @@ class RoutingManager {
       run('ip', ['link', 'set', 'mtu', String(details.mtu), 'up', 'dev', upstream.interface]);
       const endpointOutput = run('awg', ['show', upstream.interface, 'endpoints']);
       runtime.endpoint = endpointOutput.split(/\s+/)[1] || details.parsed.Peer.Endpoint;
+      runtime.listenPort = Number(run('awg', ['show', upstream.interface, 'listen-port']));
       runtime.status = 'up';
       runtime.address = details.address;
     } catch (error) {
@@ -422,13 +479,17 @@ class RoutingManager {
     });
   }
 
-  async addUpstream({ name, config }) {
+  async addUpstream({ name, config, listenPort: requestedPort }) {
     return this.enqueue(async () => {
       const cleanName = String(name || '').trim();
       if (!cleanName || cleanName.length > 64) throw httpError('Upstream name must contain 1-64 characters');
       if (Object.values(this.state.upstreams).some((item) => item.name.toLowerCase() === cleanName.toLowerCase())) throw httpError('Upstream name already exists', 409);
+      // Validate the original first so malformed/secret input is never rewritten blindly.
+      this.validateUpstreamConfig(config);
+      if (requestedPort !== undefined) config = withListenPort(config, this.validatePublishedPort(requestedPort));
       const details = this.validateUpstreamConfig(config);
       this.assertUpstreamAddressAvailable(details.address);
+      this.assertUpstreamPortAvailable(details.listenPort);
       await this.validateWithAwgQuick(config);
       const slot = this.allocateSlot();
       const id = crypto.randomUUID();
@@ -544,22 +605,38 @@ class RoutingManager {
 
   upstreamStats(upstream) {
     const runtime = this.runtime.get(upstream.id) || { status: upstream.enabled ? 'down' : 'disabled' };
-    let stats = { latestHandshakeAt: null, transferRx: 0, transferTx: 0 };
+    let stats = { latestHandshakeAt: null, transferRx: 0, transferTx: 0, persistentKeepalive: 0 };
+    let readable = false;
+    let configuredListenPort = null;
+    let configurationError = null;
+    try {
+      const config = parseIni(fs.readFileSync(this.configPath(upstream.id), 'utf8'));
+      configuredListenPort = listenPort(config.Interface.ListenPort) || null;
+    } catch (_) { configurationError = 'Cannot read saved upstream port'; }
+    let endpoint = runtime.endpoint || null;
     if (runtime.status === 'up') {
       try {
         const peer = run('awg', ['show', upstream.interface, 'dump']).split('\n')[1];
         if (peer) {
           const fields = peer.split('\t');
-          stats = { latestHandshakeAt: fields[4] === '0' ? null : new Date(Number(fields[4]) * 1000).toISOString(), transferRx: Number(fields[5] || 0), transferTx: Number(fields[6] || 0) };
+          if (fields.length < 8) throw new Error('Incomplete peer status');
+          stats = { latestHandshakeAt: fields[4] === '0' ? null : new Date(Number(fields[4]) * 1000).toISOString(),
+            transferRx: Number(fields[5] || 0), transferTx: Number(fields[6] || 0), persistentKeepalive: listenPort(fields[7] === 'off' ? 0 : fields[7]) };
+          endpoint = fields[2] === '(none)' ? null : fields[2];
+          readable = true;
         }
-      } catch (_) { /* Runtime status remains authoritative. */ }
+      } catch (_) { /* Process availability and peer status are separate signals. */ }
     }
-    return { ...upstream, status: runtime.status, endpoint: runtime.endpoint || null, error: runtime.error || null, ...stats };
+    return { ...upstream, status: runtime.status, endpoint, error: runtime.error || configurationError,
+      listenPort: runtime.listenPort || configuredListenPort, configuredListenPort,
+      portInPublishedRange: Boolean(configuredListenPort && this.upstreamPorts.includes(configuredListenPort)),
+      connectionStatus: connectionStatus({ ...runtime, ...stats, readable }), ...stats };
   }
 
   snapshot() {
     return {
       defaultRoute: this.state.defaultRoute,
+      publishedUpstreamPorts: this.upstreamPorts,
       upstreams: Object.values(this.state.upstreams).map((item) => this.upstreamStats(item)).sort((a, b) => a.slot - b.slot),
       policies: Object.values(this.state.policies).sort((a, b) => a.priority - b.priority),
       dns: { status: 'running', upstream: this.dnsUpstream, ipv6Supported: false },

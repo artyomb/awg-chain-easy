@@ -126,6 +126,7 @@
             <div class="field"><label for="upstream-name">Name</label><input id="upstream-name" maxlength="64" required></div>
             <div class="field wide"><label for="upstream-file">Config file</label><input id="upstream-file" type="file" accept=".conf,text/plain"></div>
             <div class="field wide"><label for="upstream-config">Configuration</label><textarea id="upstream-config" class="code-input" rows="10" spellcheck="false" required></textarea></div>
+            <div class="field"><label for="upstream-listen-port">Fixed local UDP port (optional)</label><input id="upstream-listen-port" type="number" min="1" max="65535" placeholder="Keep imported port"><p id="upstream-port-hint" class="secondary-value">Use a published port when the upstream initiates connections.</p></div>
             <div><button class="button primary" type="submit">Import and start</button></div>
           </form>
           <p id="upstream-error" class="form-error" role="alert"></p>
@@ -135,7 +136,7 @@
           <div class="section-heading"><div><h2 id="upstreams-title">Upstream tunnels</h2><p>Each active config has an isolated userspace interface and routing table.</p></div></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Name</th><th>Interface</th><th>Endpoint</th><th>Status</th><th>Handshake</th><th>Transfer</th><th class="actions-column">Actions</th></tr></thead>
+              <thead><tr><th>Name</th><th>Interface</th><th>Endpoint</th><th>Connection</th><th>Handshake</th><th>Transfer</th><th class="actions-column">Actions</th></tr></thead>
               <tbody id="upstream-rows"></tbody>
             </table>
             <div id="upstream-empty" class="empty-state"><p>No upstream tunnels configured.</p></div>
@@ -171,6 +172,30 @@
       </div>
     </section>
   </main>
+
+  <dialog id="peer-connection-dialog" class="dialog" aria-labelledby="peer-connection-title">
+    <div class="dialog-heading"><h2 id="peer-connection-title">Peer connection</h2><button id="close-peer-connection" class="button secondary compact" type="button">Close</button></div>
+    <p>Initiate the tunnel from this server when the remote peer cannot reach it directly.</p>
+    <form id="peer-connection-form" class="stack-form spaced">
+      <label class="toggle-field"><input id="peer-connection-enabled" type="checkbox">Initiate connections to this peer</label>
+      <div id="peer-connection-fields" class="form-grid" hidden>
+        <div class="field wide"><label for="peer-connection-endpoint">Remote endpoint</label><input id="peer-connection-endpoint" placeholder="vpn.example.com:54323" autocomplete="off" spellcheck="false"><p class="secondary-value">Use the remote peer's published UDP port.</p></div>
+        <div class="field"><label for="peer-connection-keepalive">Keepalive (seconds)</label><input id="peer-connection-keepalive" type="number" min="1" max="65535" value="25"></div>
+      </div>
+      <p id="peer-connection-error" class="form-error" role="alert"></p>
+      <div><button class="button primary" type="submit">Save connection</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="upstream-port-dialog" class="dialog" aria-labelledby="upstream-port-title">
+    <div class="dialog-heading"><h2 id="upstream-port-title">Upstream listen port</h2><button id="close-upstream-port" class="button secondary compact" type="button">Close</button></div>
+    <form id="upstream-port-form" class="stack-form spaced">
+      <div class="field"><label for="upstream-port-value">Fixed local UDP port</label><input id="upstream-port-value" type="number" min="1" max="65535" placeholder="Automatic"><p id="upstream-port-range" class="secondary-value"></p></div>
+      <p>Changing this port briefly restarts this upstream. Update the remote peer's endpoint to match. Leave blank for automatic allocation.</p>
+      <p id="upstream-port-error" class="form-error" role="alert"></p>
+      <div><button class="button primary" type="submit">Save port</button></div>
+    </form>
+  </dialog>
 
   <dialog id="qr-dialog" class="dialog">
     <div class="dialog-heading"><div><h2 id="qr-title">Client QR code</h2><p>Scan with a client compatible with the selected protocol.</p></div><button id="close-qr-button" class="button secondary compact" type="button">Close</button></div>

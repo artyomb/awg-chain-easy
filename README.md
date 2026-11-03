@@ -22,6 +22,8 @@ Existing AWG3 profiles continue to use their current settings; the optional
 - Route by domain or IPv4 CIDR to an upstream, directly to the server uplink,
   or to a fail-closed blocked destination.
 - Keep each upstream in a separate interface and policy-routing table.
+- Persist fixed upstream UDP ports and configure reverse initiation per server peer.
+- Distinguish a running upstream interface from a recent peer handshake.
 - Persist `wg0.json`, all generated server configs, keys, and exported profiles under `server/config`.
 - Synchronize peer changes without restarting the tunnel.
 - Bcrypt password authentication, same-site sessions, login throttling, and
@@ -150,6 +152,76 @@ Important limitations:
 The default `WG_DEFAULT_DNS=auto` writes the AWG server tunnel address into new
 client profiles. `DNS_UPSTREAM` selects the IPv4 resolver used by the proxy.
 
+## Stable upstream ports and reverse initiation
+
+Use reverse initiation when one server can reach the other but new connections
+in the opposite direction are filtered. For a chain `A → B`, B can initiate
+the encrypted link back to A; client traffic still exits through B.
+
+1. On A, configure the published upstream UDP ports in `server/.env`:
+
+   ```dotenv
+   UPSTREAM_BIND_ADDRESS=0.0.0.0
+   UPSTREAM_PORT_RANGE=54323-54330
+   ```
+
+   A single port such as `54323` is also supported. The range must contain
+   1–8 consecutive ports, distinct from the inbound tunnel ports and DNS
+   port 53. Use A's public interface address as the bind address when a
+   specific host interface is required. Apply Compose changes with
+   `./manage.sh up`; editing `.env` alone does not update Docker bindings.
+2. On A, open **Routing → Upstream tunnels → Port** and set B's imported
+   upstream to a fixed local UDP port, for example `54323`. The same field
+   is available during import. Each upstream needs its own port; disabled
+   upstreams retain their reservations. Changing an active port briefly
+   restarts that upstream. Allow this UDP port in the host/provider firewall.
+3. Confirm `docker port awg-chain-easy 54323/udp` shows A's intended host
+   binding. The published host and container ports must be identical.
+   The UI reports the configured range; it cannot verify Docker or provider
+   firewall rules.
+4. On B, open **Clients → Connection** for the existing peer belonging to A.
+   Enable **Initiate connections to this peer**, set the remote endpoint to
+   `A_PUBLIC_IP:54323`, and keep **Keepalive (seconds)** at `25`. Save.
+   These settings are stored in `wg0.json` and regenerated into B's server
+   peer configuration after restarts and client edits. Keys, addresses, and
+   downloaded client profiles are preserved.
+5. Verify a fresh handshake and traffic through A's upstream. If an external
+   helper previously enforced these settings, retire it only after the native
+   setting and live peer configuration have been verified. Otherwise that
+   helper can override later changes.
+
+Clearing **Fixed local UDP port** uses automatic allocation. During import,
+a blank field preserves the profile's original `ListenPort`, if present.
+Existing profiles are never silently renumbered. Imported fixed ports outside
+the published range remain accepted for compatibility and appear with a
+warning; publish them before relying on reverse initiation. Explicit port
+edits must use the configured range. Unchecking reverse initiation stops
+server-side keepalives; a previously learned live endpoint can remain until
+the interface restarts. `WG_PERSISTENT_KEEPALIVE` still controls downloaded
+client profiles and is separate from this server-peer setting.
+
+### Upstream connection state
+
+The **Interface** column reports process availability; **Connection** reports
+peer handshake state. A recent handshake does not prove that client forwarding
+or Internet access works. Check the actual routed traffic when diagnosing a
+failure.
+
+| Connection | Meaning |
+| --- | --- |
+| Connected | A recent handshake was observed. |
+| Awaiting | No handshake yet; startup grace is active or local keepalive is off. |
+| Idle | The last handshake is old and local keepalive is off; inactivity alone does not prove failure. |
+| Stale | Keepalive is enabled but no recent handshake was observed after startup grace. |
+| Unknown | Runtime peer status could not be read reliably. |
+| Unavailable / Disabled | The upstream process is unavailable or the upstream is disabled. |
+
+The recency/grace threshold is the largest of 180 seconds, the configured
+maximum rekey interval plus 60 seconds, and three keepalive intervals.
+Connection status is observational: it does not restart tunnels or change
+routing automatically. `/api/health` continues to report service/interface
+availability, independently of remote connectivity.
+
 ## Persistent state
 
 ```text
@@ -202,3 +274,6 @@ and tests client allocation and upstream collisions through the live API in
 an isolated container. Docker access and `/dev/net/tun` are required; production
 state is not mounted. Pass an existing image tag as the first argument to test
 that image without rebuilding it.
+
+Run `node --test server/test/connection-settings.test.js` for port, reverse-peer,
+and connection-state validation without Docker.

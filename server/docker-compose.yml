@@ -18,11 +18,13 @@ services:
       net.ipv4.ip_forward: "1"
       net.ipv4.conf.all.rp_filter: "0"
     ports:
+      - "${UPSTREAM_BIND_ADDRESS:-0.0.0.0}:${UPSTREAM_PORT_RANGE:-54323-54330}:${UPSTREAM_PORT_RANGE:-54323-54330}/udp"
       - "${WG_PORT:-51820}:${WG_PORT:-51820}/udp"
       - "${AWG2_PORT:-51822}:${AWG2_PORT:-51822}/udp"
       - "${NATIVE_WG_PORT:-51823}:${NATIVE_WG_PORT:-51823}/udp"
       - "${WEBUI_BIND_ADDRESS:-127.0.0.1}:${PORT:-51821}:${PORT:-51821}/tcp"
     environment:
+      UPSTREAM_PORT_RANGE: ${UPSTREAM_PORT_RANGE:-54323-54330}
       WG_HOST: ${WG_HOST:?Set WG_HOST in .env}
       WG_PORT: ${WG_PORT:-51820}
       WG_CONFIG_PORT: ${WG_CONFIG_PORT:-51820}

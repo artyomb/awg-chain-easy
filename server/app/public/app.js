@@ -6,6 +6,10 @@ const elements = Object.fromEntries([
   'create-error', 'page-message', 'endpoint-value', 'client-count', 'connected-count', 'amneziawg-version',
   'client-rows', 'empty-state', 'empty-create-button', 'refresh-button', 'last-updated',
   'qr-dialog', 'qr-title', 'qr-image', 'close-qr-button',
+  'peer-connection-dialog', 'peer-connection-title', 'close-peer-connection', 'peer-connection-form',
+  'peer-connection-enabled', 'peer-connection-fields', 'peer-connection-endpoint', 'peer-connection-keepalive', 'peer-connection-error',
+  'upstream-listen-port', 'upstream-port-hint', 'upstream-port-dialog', 'upstream-port-title',
+  'close-upstream-port', 'upstream-port-form', 'upstream-port-value', 'upstream-port-range', 'upstream-port-error',
   'primary-nav', 'clients-page', 'routing-page', 'new-upstream-button', 'new-policy-button',
   'dns-status', 'dns-upstream', 'upstream-count', 'policy-count',
   'default-route-form', 'default-route', 'default-route-error',
@@ -18,6 +22,9 @@ const elements = Object.fromEntries([
 
 let refreshTimer;
 let editingPolicyId = null;
+let editingPeerId = null;
+let editingUpstreamId = null;
+let publishedUpstreamPorts = [];
 
 async function request(url, options = {}) {
   const response = await fetch(url, {
@@ -40,6 +47,7 @@ function showLogin() {
   elements['logout-button'].hidden = true;
   elements['primary-nav'].hidden = true;
   elements['login-view'].hidden = false;
+  for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
   elements.password.focus();
 }
 
@@ -139,12 +147,42 @@ function updateRouteSelect(select, upstreams, selected) {
   if ([...select.options].some((option) => option.value === previous)) select.value = previous;
 }
 
+function upstreamConnectionBadge(upstream) {
+  const states = {
+    connected: ['Connected', 'running', 'A recent authenticated handshake succeeded. Traffic forwarding is not actively probed.'],
+    awaiting: ['Awaiting', 'disabled', 'No handshake yet. An idle tunnel may wait for traffic.'],
+    idle: ['Idle', 'disabled', 'The previous handshake is old; keepalive is off, so inactivity does not establish a failure.'],
+    stale: ['Stale', 'warning', 'No recent handshake despite enabled keepalives. Check reachability and the peer configuration.'],
+    unknown: ['Unknown', 'warning', 'The running interface did not provide readable peer status.'],
+    disabled: ['Disabled', 'disabled', 'This upstream is disabled.'],
+    unavailable: ['Unavailable', 'failed', 'The upstream interface is not running.'],
+  };
+  const [label, style, description] = states[upstream.connectionStatus] || states.unknown;
+  const badge = stateBadge(label, style);
+  badge.title = description;
+  return badge;
+}
+
+function publishedPortsHint() {
+  return publishedUpstreamPorts.length ? `Configured published UDP ports: ${publishedUpstreamPorts.join(', ')}. Apply Compose changes before using a new range.` : 'Published port range is unavailable.';
+}
+
+function openUpstreamPort(upstream) {
+  editingUpstreamId = upstream.id;
+  elements['upstream-port-title'].textContent = `Listen port: ${upstream.name}`;
+  elements['upstream-port-value'].value = upstream.configuredListenPort || '';
+  elements['upstream-port-range'].textContent = publishedPortsHint();
+  elements['upstream-port-error'].textContent = '';
+  elements['upstream-port-dialog'].showModal();
+}
+
 function renderUpstreams(upstreams) {
   elements['upstream-rows'].replaceChildren();
   elements['upstream-empty'].hidden = upstreams.length !== 0;
   for (const upstream of upstreams) {
     const actions = document.createElement('div');
     actions.className = 'row-actions';
+    actions.append(button('Port', 'secondary', () => openUpstreamPort(upstream)));
     actions.append(button(upstream.enabled ? 'Disable' : 'Enable', 'secondary', async () => {
       try {
         await request(`/api/routing/upstreams/${upstream.id}/${upstream.enabled ? 'disable' : 'enable'}`, { method: 'POST' });
@@ -160,12 +198,28 @@ function renderUpstreams(upstreams) {
     const transfer = document.createElement('span');
     transfer.className = 'secondary-value numeric';
     transfer.textContent = `↓ ${bytes(upstream.transferRx)}  ↑ ${bytes(upstream.transferTx)}`;
+    const interfaceInfo = document.createElement('div');
+    interfaceInfo.className = 'resource-details';
+    const interfaceName = document.createElement('span');
+    interfaceName.className = 'mono';
+    interfaceName.textContent = `${upstream.protocol || 'AWG'} · ${upstream.interface} / table ${upstream.table}`;
+    interfaceInfo.append(interfaceName, stateBadge(upstream.status === 'up' ? 'Running' : upstream.status, statusStyle));
+    const endpointInfo = document.createElement('div');
+    endpointInfo.className = 'resource-details';
+    const endpointValue = document.createElement('span');
+    endpointValue.className = 'mono';
+    endpointValue.textContent = upstream.endpoint || '—';
+    const portValue = document.createElement('span');
+    portValue.className = 'secondary-value';
+    portValue.textContent = `Local UDP ${upstream.listenPort || '—'}${upstream.configuredListenPort ? ' · fixed' : ' · automatic'}`;
+    if (upstream.configuredListenPort && !upstream.portInPublishedRange) portValue.textContent += ' · outside published range';
+    endpointInfo.append(endpointValue, portValue);
     const row = document.createElement('tr');
     row.append(
       cell('Name', upstream.name, 'client-name'),
-      cell('Interface', `${upstream.protocol || 'AWG'} · ${upstream.interface} / table ${upstream.table}`, 'mono'),
-      cell('Endpoint', upstream.endpoint || '—', 'mono'),
-      cell('Status', stateBadge(upstream.status === 'up' ? 'Running' : upstream.status, statusStyle)),
+      cell('Interface', interfaceInfo),
+      cell('Endpoint', endpointInfo),
+      cell('Connection', upstreamConnectionBadge(upstream)),
       cell('Handshake', time(upstream.latestHandshakeAt), 'numeric'),
       cell('Transfer', transfer),
       cell('Actions', actions, 'actions-column'),
@@ -209,6 +263,8 @@ function renderPolicies(policies, upstreams) {
 }
 
 function renderRouting(routing) {
+  publishedUpstreamPorts = routing.publishedUpstreamPorts || [];
+  elements['upstream-port-hint'].textContent = `${publishedPortsHint()} Leave blank to preserve the imported setting.`;
   elements['dns-upstream'].textContent = routing.dns.upstream;
   elements['upstream-count'].textContent = routing.upstreams.length;
   elements['policy-count'].textContent = routing.policies.length;
@@ -216,6 +272,26 @@ function renderRouting(routing) {
   updateRouteSelect(elements['policy-route'], routing.upstreams);
   renderUpstreams(routing.upstreams);
   renderPolicies(routing.policies, routing.upstreams);
+}
+
+function updatePeerConnectionFields() {
+  const enabled = elements['peer-connection-enabled'].checked;
+  elements['peer-connection-fields'].hidden = !enabled;
+  for (const id of ['peer-connection-endpoint', 'peer-connection-keepalive']) {
+    elements[id].disabled = !enabled;
+    elements[id].required = enabled;
+  }
+}
+
+function openPeerConnection(client) {
+  editingPeerId = client.id;
+  elements['peer-connection-title'].textContent = `Connection: ${client.name}`;
+  elements['peer-connection-enabled'].checked = Boolean(client.reverseInitiation);
+  elements['peer-connection-endpoint'].value = client.reverseInitiation?.endpoint || '';
+  elements['peer-connection-keepalive'].value = client.reverseInitiation?.persistentKeepalive || 25;
+  elements['peer-connection-error'].textContent = '';
+  updatePeerConnectionFields();
+  elements['peer-connection-dialog'].showModal();
 }
 
 function renderClients(clients) {
@@ -226,6 +302,7 @@ function renderClients(clients) {
     const name = document.createElement('span');
     name.className = 'client-name';
     name.textContent = client.name;
+    if (client.reverseInitiation) name.title = `Initiates to ${client.reverseInitiation.endpoint}; keepalive ${client.reverseInitiation.persistentKeepalive}s`;
     const transfer = document.createElement('span');
     transfer.className = 'secondary-value numeric';
     transfer.textContent = `↓ ${bytes(client.transferRx)}  ↑ ${bytes(client.transferTx)}`;
@@ -236,6 +313,7 @@ function renderClients(clients) {
     download.className = 'button secondary compact';
     download.textContent = 'Download';
     download.href = `/api/wireguard/client/${client.id}/configuration`;
+    actions.append(button('Connection', 'secondary', () => openPeerConnection(client)));
     actions.append(download);
     actions.append(button('QR', 'secondary', () => {
       elements['qr-title'].textContent = `QR code: ${client.name}`;
@@ -380,12 +458,42 @@ elements['upstream-form'].addEventListener('submit', async (event) => {
   try {
     await request('/api/routing/upstreams', {
       method: 'POST',
-      body: JSON.stringify({ name: elements['upstream-name'].value, config: elements['upstream-config'].value }),
+      body: JSON.stringify({ name: elements['upstream-name'].value, config: elements['upstream-config'].value,
+        ...(elements['upstream-listen-port'].value ? { listenPort: Number(elements['upstream-listen-port'].value) } : {}) }),
     });
     elements['upstream-form'].reset();
     elements['upstream-create-panel'].hidden = true;
     await refresh();
   } catch (error) { elements['upstream-error'].textContent = error.message; }
+});
+
+elements['close-peer-connection'].addEventListener('click', () => elements['peer-connection-dialog'].close());
+elements['peer-connection-enabled'].addEventListener('change', updatePeerConnectionFields);
+elements['peer-connection-dialog'].addEventListener('close', () => { editingPeerId = null; });
+elements['peer-connection-form'].addEventListener('submit', async (event) => {
+  event.preventDefault();
+  elements['peer-connection-error'].textContent = '';
+  try {
+    const reverseInitiation = elements['peer-connection-enabled'].checked ? {
+      endpoint: elements['peer-connection-endpoint'].value.trim(),
+      persistentKeepalive: Number(elements['peer-connection-keepalive'].value),
+    } : null;
+    await request(`/api/wireguard/client/${editingPeerId}/connection`, { method: 'PUT', body: JSON.stringify({ reverseInitiation }) });
+    elements['peer-connection-dialog'].close();
+    await refresh();
+  } catch (error) { elements['peer-connection-error'].textContent = error.message; }
+});
+
+elements['close-upstream-port'].addEventListener('click', () => elements['upstream-port-dialog'].close());
+elements['upstream-port-dialog'].addEventListener('close', () => { editingUpstreamId = null; });
+elements['upstream-port-form'].addEventListener('submit', async (event) => {
+  event.preventDefault();
+  elements['upstream-port-error'].textContent = '';
+  try {
+    await request(`/api/routing/upstreams/${editingUpstreamId}`, { method: 'PUT', body: JSON.stringify({ listenPort: Number(elements['upstream-port-value'].value || 0) }) });
+    elements['upstream-port-dialog'].close();
+    await refresh();
+  } catch (error) { elements['upstream-port-error'].textContent = error.message; }
 });
 
 elements['new-policy-button'].addEventListener('click', () => openPolicyEditor());
