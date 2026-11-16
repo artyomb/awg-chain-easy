@@ -214,3 +214,16 @@ test('TCP connection limits, upstream timeout, and shutdown release sockets', { 
   await proxy.stop(); await pending;
   assert.equal(proxy.pending, 0); assert.equal(proxy.exchanges.size, 0);
 });
+
+test('DNS ordered failover uses next resolver on transport error and stops on NXDOMAIN', async () => {
+ const r=routing();r.dnsUpstreams=['192.0.2.1','192.0.2.2','192.0.2.3'];const proxy=new DnsPolicyProxy(r);const calls=[];
+ proxy.forward=async(packet,transport,upstream)=>{calls.push(upstream);if(upstream==='192.0.2.1')throw new Error('timeout');return reply(packet,[],0x8183)};
+ const result=await proxy.resolve(query());assert.equal(result.readUInt16BE(2)&15,3);assert.deepEqual(calls,['192.0.2.1','192.0.2.2']);assert.equal(proxy.pending,0);
+ proxy.forward=async()=>{throw new Error('down')};await assert.rejects(proxy.resolve(query()),/down/);assert.equal(proxy.pending,0);
+});
+test('UDP and TCP forward reject SERVFAIL for fallback while accepting NXDOMAIN', async(t)=>{
+ for(const transport of ['udp','tcp']){
+  const f=await fixture(t,(request,send)=>send(reply(request,[],0x8182)));
+  await assert.rejects(f.proxy.forward(query(),transport),/DNS upstream error/);
+ }
+});

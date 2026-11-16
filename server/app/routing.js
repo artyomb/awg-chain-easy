@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { DnsPolicyProxy } = require('./dns-proxy');
+const { ClientStatistics, runtimeGeneration } = require('./client-statistics');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -112,14 +113,17 @@ function shellNftString(value) {
 }
 
 class RoutingManager {
-  constructor({ inboundInterfaces, downstreamNetworks, downstreamAddresses, mtu, dnsUpstream, dnsTtlMin, dnsTtlMax, inboundPorts = [53, 51820, 51822, 51823], upstreamPorts = portRange() }) {
+  constructor({ inboundInterfaces, downstreamNetworks, downstreamAddresses, directClientAddresses = () => [], clientRoutes = () => [], mtu, dnsUpstream, dnsUpstreams, dnsTtlMin, dnsTtlMax, inboundPorts = [53, 51820, 51822, 51823], upstreamPorts = portRange() }) {
     this.inboundInterfaces = inboundInterfaces;
     this.inboundPorts = inboundPorts;
     this.upstreamPorts = upstreamPorts;
     this.downstreamNetworks = downstreamNetworks;
     this.downstreamAddresses = downstreamAddresses;
+    this.directClientAddresses = directClientAddresses;
+    this.clientRoutes = clientRoutes;
     this.mtu = mtu;
     this.dnsUpstream = dnsUpstream;
+    this.dnsUpstreams = dnsUpstreams || [dnsUpstream];
     this.dnsTtlMin = dnsTtlMin;
     this.dnsTtlMax = dnsTtlMax;
     this.state = null;
@@ -134,6 +138,8 @@ class RoutingManager {
     this.failoverError = null;
     this.failoverLastSwitchAt = null;
     this.appliedDefaultMark = null;
+    this.upstreamStatistics = null;
+    this.upstreamStatisticsTimer = null;
   }
 
   enqueue(action) {
@@ -154,6 +160,8 @@ class RoutingManager {
     }
     const previous = JSON.stringify(this.state);
     this.state = migrateFailover(this.state);
+    this.state.policiesEnabled ??= true;
+    this.upstreamStatistics = new ClientStatistics(path.join(DATA_DIR, 'upstream-statistics.json'));
     if (JSON.stringify(this.state) !== previous) await this.save();
   }
 
@@ -307,6 +315,9 @@ class RoutingManager {
       this.resetFailover();
       await this.reconcile();
       run('nft', ['delete', 'table', 'inet', 'awg_chain_startup']);
+      this.collectUpstreamStatistics();
+      this.upstreamStatisticsTimer = setInterval(() => { try { this.collectUpstreamStatistics(); } catch (error) { console.error('[awg-chain-easy] Upstream statistics: ' + error.message); } }, 5000);
+      this.upstreamStatisticsTimer.unref();
     });
   }
 
@@ -373,6 +384,7 @@ class RoutingManager {
   }
 
   async stopUpstream(upstream) {
+    this.collectUpstreamStatistics();
     if (this.failover?.health.has(upstream.id)) this.failover.record(upstream.id, { success: false, available: false });
     const runtime = this.runtime.get(upstream.id);
     if (runtime) runtime.stopping = true;
@@ -407,9 +419,54 @@ class RoutingManager {
     return `set ${policySetName(policy)} { type ipv4_addr; flags interval, timeout;${elements} }`;
   }
 
+  directAddresses() {
+    const addresses = [...new Set(this.directClientAddresses())];
+    if (addresses.some((address) => ipv4ToNumber(address) === null)) throw new Error('Invalid direct client IPv4 address');
+    return addresses;
+  }
+
+  validateClientEgress({ egress = 'default', upstreamId = null }) {
+    if (!['default', 'direct', 'upstream'].includes(egress)) throw httpError('Client egress must be default, direct, or upstream');
+    if (egress === 'upstream' && (typeof upstreamId !== 'string' || !Object.hasOwn(this.state.upstreams, upstreamId))) throw httpError('Selected client upstream does not exist');
+    return { egress, upstreamId: egress === 'upstream' ? upstreamId : null };
+  }
+
+  clientSourceSets() {
+    const sets = { direct_clients_v4: this.directAddresses(), blocked_clients_v4: [] };
+    for (let slot = 0; slot < MAX_UPSTREAMS; slot++) sets[`client_upstream_${slot}`] = [];
+    for (const client of this.clientRoutes()) {
+      if (client.enabled === false || !['direct', 'upstream'].includes(client.egress)) continue;
+      if (ipv4ToNumber(client.address) === null) throw new Error('Invalid client IPv4 address');
+      if (client.egress === 'direct') sets.direct_clients_v4.push(client.address);
+      else {
+        const upstream = this.state.upstreams[client.upstreamId];
+        const name = upstream && Number.isInteger(upstream.slot) && upstream.slot >= 0 && upstream.slot < MAX_UPSTREAMS
+          ? `client_upstream_${upstream.slot}` : 'blocked_clients_v4';
+        sets[name].push(client.address);
+      }
+    }
+    return Object.fromEntries(Object.entries(sets).map(([name, values]) => [name, [...new Set(values)]]));
+  }
+
+  async syncDirectClients() {
+    const sets = this.clientSourceSets();
+    const result = this.applyNftScript(Object.entries(sets).map(([name, values]) =>
+      `flush set ${NFT_FAMILY} ${NFT_TABLE} ${name}\n` +
+      (values.length ? `add element ${NFT_FAMILY} ${NFT_TABLE} ${name} { ${values.join(', ')} }\n` : '')).join(''));
+    if (result.status !== 0) throw new Error('Unable to apply direct client routing and pinned upstreams');
+  }
+
   nftScript() {
     const activePolicies = Object.values(this.state.policies).filter((item) => item.enabled).sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));
     const system = this.systemDirectNetworks();
+    const clientSets = this.clientSourceSets();
+    const clientDeclarations = Object.entries(clientSets).map(([name, values]) =>
+      `    set ${name} { type ipv4_addr;${values.length ? ` elements = { ${values.join(', ')} };` : ''} }`).join('\n');
+    const clientClassification = [
+      `        ip saddr @blocked_clients_v4 meta mark set ${BLOCK_MARK} ct mark set meta mark return`,
+      ...Array.from({ length: MAX_UPSTREAMS }, (_, slot) => `        ip saddr @client_upstream_${slot} meta mark set 0x${(0x201 + slot).toString(16)} ct mark set meta mark return`),
+    ].join('\n');
+    if (ipv4ToNumber(this.dnsUpstream) === null) throw new Error('DNS upstream must be IPv4');
     const declarations = activePolicies.map((policy) => `    ${this.policyNftSet(policy)}`).join('\n');
     const classification = activePolicies.map((policy) => `        ip daddr @${policySetName(policy)} meta mark set ${routeMark(policy.route, this.state)} ct mark set meta mark return`).join('\n');
     const upstreamNat = Object.values(this.state.upstreams).flatMap((upstream) => {
@@ -422,22 +479,34 @@ class RoutingManager {
       ...Array.from({ length: MAX_UPSTREAMS }, (_, slot) => `        iifname ${shellNftString(interfaceName)} meta mark 0x${(0x201 + slot).toString(16)} oifname != "av${slot}" reject with icmp type admin-prohibited`),
     ]).join('\n');
     const dnsRedirect = this.inboundInterfaces.flatMap((interfaceName) => [
+      `        iifname ${shellNftString(interfaceName)} ip saddr @blocked_clients_v4 udp dport 53 drop`,
+      `        iifname ${shellNftString(interfaceName)} ip saddr @blocked_clients_v4 tcp dport 53 drop`,
+      ...Array.from({ length: MAX_UPSTREAMS }, (_, slot) => [
+        `        iifname ${shellNftString(interfaceName)} ip saddr @client_upstream_${slot} udp dport 53 dnat ip to ${this.dnsUpstream}:53`,
+        `        iifname ${shellNftString(interfaceName)} ip saddr @client_upstream_${slot} tcp dport 53 dnat ip to ${this.dnsUpstream}:53`,
+      ]).flat(),
       `        iifname ${shellNftString(interfaceName)} udp dport 53 redirect to :53`,
       `        iifname ${shellNftString(interfaceName)} tcp dport 53 redirect to :53`,
     ]).join('\n');
     return `flush table ${NFT_FAMILY} ${NFT_TABLE}\n` +
       `table ${NFT_FAMILY} ${NFT_TABLE} {\n` +
       `    set system_direct_v4 { type ipv4_addr; flags interval; elements = { ${system.join(', ')} }; }\n` +
+      `${clientDeclarations}\n` +
       `${declarations ? `${declarations}\n` : ''}` +
       `    chain classify {\n` +
       `        type filter hook prerouting priority -150; policy accept;\n` +
       `        ${inboundFilter} return\n` +
+      `        ip saddr @direct_clients_v4 meta mark set ${DIRECT_MARK} ct mark set meta mark return\n` +
+      `${clientClassification}\n` +
       `        meta mark set ct mark\n` +
       `        ct mark != 0 return\n` +
       `        ip daddr @system_direct_v4 meta mark set ${DIRECT_MARK} ct mark set meta mark return\n` +
-      `${classification ? `${classification}\n` : ''}` +
+      `        jump policy_gate\n` +
+      `        ct mark != 0 return\n` +
       `        jump default_route\n` +
       `    }\n` +
+      `    chain policy_gate { ${this.state.policiesEnabled !== false ? 'jump policy_routes;' : ''} }\n` +
+      `    chain policy_routes {\n${classification ? `${classification}\n` : ''}    }\n` +
       `    chain default_route {\n` +
       `        meta mark set ${routeMark(this.effectiveDefaultRoute(), this.state)} ct mark set meta mark\n` +
       `    }\n` +
@@ -661,6 +730,27 @@ class RoutingManager {
     });
   }
 
+  async setPoliciesEnabled(enabled) {
+    if (typeof enabled !== 'boolean') throw httpError('Policies enabled must be a boolean');
+    return this.enqueue(async () => {
+      const previous = this.state.policiesEnabled !== false;
+      const gate = (value) => {
+        const result = this.applyNftScript(`flush chain ${NFT_FAMILY} ${NFT_TABLE} policy_gate\n` +
+          (value ? `add rule ${NFT_FAMILY} ${NFT_TABLE} policy_gate jump policy_routes\n` : ''));
+        if (result.status !== 0) throw new Error('Unable to apply routing policy switch');
+      };
+      try {
+        this.state.policiesEnabled = enabled;
+        await this.save(); gate(enabled);
+        for (const client of this.clientRoutes().filter((c) => c.enabled && (!c.egress || c.egress === 'default'))) {
+          if (ipv4ToNumber(client.address) === null) throw new Error('Invalid client IPv4 address');
+          const result = tryRun('conntrack', ['-D', '-f', 'ipv4', '-s', client.address]);
+          if (![0, 1].includes(result.status)) throw new Error('Unable to clear previous client connections');
+        }
+      } catch (error) { this.state.policiesEnabled = previous; await this.save(); gate(previous); throw error; }
+    });
+  }
+
   matchingDomainPolicy(domain) {
     return Object.values(this.state.policies)
       .filter((policy) => policy.enabled && policy.domains.some((rule) => domainMatches(rule, domain)))
@@ -737,6 +827,7 @@ class RoutingManager {
     return this.enqueue(async () => {
       const upstream = this.state.upstreams[id];
       if (!upstream) throw httpError('Upstream not found', 404);
+      if (this.clientRoutes().some((client) => client.egress === 'upstream' && client.upstreamId === id)) throw httpError('Upstream is assigned to a client', 409);
       if (this.state.defaultRoute.type === 'upstream' && this.state.defaultRoute.upstreamId === id) throw httpError('Upstream is used by the default route', 409);
       if (upstream.failoverPriority != null) throw httpError('Clear this upstream’s failover priority before deleting it', 409);
       if (Object.values(this.state.policies).some((policy) => policy.route.type === 'upstream' && policy.route.upstreamId === id)) throw httpError('Upstream is used by a routing policy', 409);
@@ -814,7 +905,7 @@ class RoutingManager {
     });
   }
 
-  upstreamStats(upstream) {
+  readUpstreamStats(upstream) {
     let runtime = this.runtime.get(upstream.id) || { status: upstream.enabled ? 'down' : 'disabled' };
     if (runtime.status === 'up' && !runtime.network?.available()) runtime = { ...runtime, status: 'error', error: 'Upstream namespace link is unavailable' };
     let stats = { latestHandshakeAt: null, transferRx: 0, transferTx: 0, persistentKeepalive: 0 };
@@ -845,7 +936,54 @@ class RoutingManager {
       connectionStatus: connectionStatus({ ...runtime, ...stats, readable }), ...stats };
   }
 
+  upstreamIdentity(upstream) {
+    let publicKey = this.upstreamStatistics?.entries[upstream.id]?.publicKey || upstream.id + ':unknown';
+    try { publicKey = upstream.id + ':' + parseIni(fs.readFileSync(this.configPath(upstream.id), 'utf8')).Peer.PublicKey; } catch (_) {}
+    return { id: upstream.id, publicKey, protocol: upstream.protocol || 'AWG3' };
+  }
+
+  upstreamGeneration(upstream) { return runtimeGeneration(upstream.interface); }
+
+  collectUpstreamStatistics() {
+    if (!this.upstreamStatistics || !this.state) return;
+    const clients = [], stats = new Map();
+    for (const upstream of Object.values(this.state.upstreams)) {
+      const identity = this.upstreamIdentity(upstream); clients.push(identity);
+      const raw = this.readUpstreamStats(upstream);
+      if (raw.status === 'up' && raw.connectionStatus !== 'unknown') {
+        try { stats.set(identity.publicKey, { ...raw, generation: this.upstreamGeneration(upstream) }); } catch (_) {}
+      }
+    }
+    this.upstreamStatistics.observe(clients, stats);
+  }
+
+  resetUpstreamTraffic(id = null) {
+    return this.enqueue(async () => {
+      if (id && !this.state.upstreams[id]) throw httpError('Upstream not found', 404);
+      if (!this.upstreamStatistics) throw httpError('Upstream statistics storage is unavailable', 503);
+      this.collectUpstreamStatistics();
+      const clients = [], samples = new Map();
+      for (const upstream of Object.values(this.state.upstreams)) {
+        const identity = this.upstreamIdentity(upstream); clients.push(identity);
+        const raw = this.readUpstreamStats(upstream);
+        if (raw.status === 'up' && raw.connectionStatus !== 'unknown') {
+          try { samples.set(identity.publicKey, { ...raw, generation: this.upstreamGeneration(upstream) }); } catch (_) {}
+        }
+      }
+      const filename = this.upstreamStatistics.filename;
+      if (fs.existsSync(filename)) await fsp.copyFile(filename, filename + '.before-reset-' + Date.now());
+      this.upstreamStatistics.resetTraffic(clients, samples, id ? new Set([id]) : null);
+    });
+  }
+
+  upstreamStats(upstream) {
+    const raw = this.readUpstreamStats(upstream);
+    const totals = this.upstreamStatistics?.values(this.upstreamIdentity(upstream));
+    return totals ? { ...raw, transferRx: totals.transferRx, transferTx: totals.transferTx } : raw;
+  }
+
   snapshot() {
+    this.collectUpstreamStatistics();
     return {
       defaultRoute: this.state.defaultRoute,
       effectiveDefaultRoute: this.effectiveDefaultRoute(),
@@ -854,8 +992,9 @@ class RoutingManager {
         health: this.failover?.snapshot() || {}, lastSwitchAt: this.failoverLastSwitchAt, error: this.failoverError },
       publishedUpstreamPorts: this.upstreamPorts,
       upstreams: Object.values(this.state.upstreams).map((item) => this.upstreamStats(item)).sort((a, b) => a.slot - b.slot),
+      policiesEnabled: this.state.policiesEnabled !== false,
       policies: Object.values(this.state.policies).sort((a, b) => a.priority - b.priority),
-      dns: { status: 'running', upstream: this.dnsUpstream, ipv6Supported: false },
+      dns: { status: 'running', upstream: this.dnsUpstream, upstreams: this.dnsUpstreams, ipv6Supported: false },
     };
   }
 
@@ -867,6 +1006,8 @@ class RoutingManager {
 
   async shutdown() {
     this.stopping = true;
+    clearInterval(this.upstreamStatisticsTimer);
+    this.collectUpstreamStatistics();
     const errors = [];
     try { this.blockDownstreamForwarding(); } catch (error) { errors.push(error); }
     clearTimeout(this.failoverTimer);

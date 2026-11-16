@@ -13,6 +13,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Validate portable Compose configuration
+        run: docker compose --project-directory server --env-file server/.env.example config --quiet
       - name: Build from the checkout
         run: docker build -t awg-chain-easy:ci server
       - name: Run unit and loopback network tests inside the runtime image
@@ -20,8 +22,11 @@ jobs:
           docker run --rm --network none --security-opt no-new-privileges:true
           --mount type=bind,src=$PWD/server/test,dst=/tests,readonly
           --entrypoint node awg-chain-easy:ci --test
-          /tests/connection-settings.test.js /tests/upstream-network.test.js
-          /tests/failover.test.js /tests/dns-proxy.test.js /tests/auth.test.js
+          /tests/connection-settings.test.js /tests/upstream-network.test.js /tests/failover.test.js
+          /tests/dns-proxy.test.js /tests/auth.test.js /tests/profile-export.test.js
+          /tests/client-egress.test.js /tests/direct-client.test.js /tests/client-statistics.test.js
+          /tests/handshake-history.test.js /tests/gui-settings.test.js /tests/individual-reset.test.js
+          /tests/upstream-statistics.test.js /tests/policy-lock.test.js /tests/amnezia-qr.test.js
       - name: Initialize fresh VPN state without production credentials
         run: >-
           docker run --rm --network none --security-opt no-new-privileges:true
@@ -29,3 +34,13 @@ jobs:
           awg-chain-easy:ci /app/server.js --initialize
       - name: Start the VPN service and exercise the live API
         run: bash server/test/run.sh awg-chain-easy:ci
+      - name: Exercise enhancement APIs in isolated network namespaces
+        run: |
+          for suite in generator-api.test.js api.test.js; do
+            docker run --rm --network none --security-opt no-new-privileges:true \
+              --cap-add NET_ADMIN --cap-add SYS_ADMIN --device /dev/net/tun \
+              --sysctl net.ipv4.ip_forward=1 --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+              --sysctl net.ipv4.conf.all.rp_filter=0 \
+              --mount type=bind,src=$PWD/server/test,dst=/tests,readonly \
+              --entrypoint node awg-chain-easy:ci --test /tests/$suite
+          done

@@ -456,3 +456,89 @@ The container uses `no-new-privileges`, but the web service still shares VPN key
 and network privileges with the tunnel manager. `NET_ADMIN` and `SYS_ADMIN` are
 required by the present namespace design. Separating the web service from a
 privileged networking helper requires a separate architecture change.
+
+
+## Local enhancement bundle
+
+This checkout adds an integrated Russian/English UI, per-client egress selection,
+Amnezia VPN URI/QR exports, persistent statistics, and settings managed from the
+browser. These changes are based on commit
+`7540d91ff28fa9e184fe7c9e43367f36838c2ac3`; they do not introduce the original
+three-protocol server, upstream namespaces or priority failover, which already
+exist above.
+
+### Client egress and exports
+
+A client can use automatic destination policies/default-route failover, direct
+server egress, or one explicitly selected upstream. A pinned client ignores
+destination policies and shared failover; unavailable or missing upstreams fail
+closed. Its UDP/TCP DNS is routed through the same upstream. Deleting an upstream
+referenced by any client, including a disabled client, is rejected. Editing a
+client name or egress mode preserves its keys and address; protocol changes still
+require a separate client. A route change clears only that client's conntrack
+entries and can interrupt its existing connections.
+
+The config, `vpn://` and QR exports use the current server name. The Amnezia URI
+wraps the same native configuration together with Amnezia metadata; its
+`description` contains only the server name. Amnezia QR uses QDataStream-compatible
+packets and 850-byte chunks, cycling once per second. A native `.conf` QR is also
+available. Configure the format in Settings. All exports contain private
+connection material and remain session-protected.
+
+`AWG3_RANDOM_TRAILERS` and `AWG3_DISABLE_COOKIES` are initial on/off settings for new
+AWG3 interfaces only. This implementation requires equal S1-S4 when
+RandomTrailers is on. Existing interface parameters are not silently migrated.
+The default AllowedIPs remains IPv4. Deployments needing Amnezia's client-side
+split-tunneling recognition can explicitly use `0.0.0.0/0, ::/0`; this does not add
+an IPv6 dataplane or establish leak-free IPv6 behavior.
+
+### Settings and statistics
+
+Settings contains the server name, ordered IPv4 DNS resolvers, failover probe
+parameters and preferred QR format. Initial values come from ENV/defaults; after
+creation, `/etc/wireguard/gui-settings.json` is authoritative. It is atomically
+written and its preceding version is retained as `.bak`. The default resolver
+list starts with `DNS_UPSTREAM`, followed by `8.8.8.8` and `1.0.0.1` with duplicates
+removed. The proxy tries the next resolver on timeout or error; NXDOMAIN is a
+valid answer. The DNS test checks response time from this server without saving
+settings. **Pinned-client DNS bypasses the proxy and currently uses only the first
+resolver through its pinned tunnel.**
+
+Client traffic and saved last-handshake times persist in
+`client-statistics.json`; upstream traffic persists in
+`upstream-statistics.json`. Counter generations and raw baselines prevent ordinary
+container/interface restarts from erasing totals or adding old samples twice.
+Traffic is cumulative bytes, not speed or a delivery/online guarantee. RX/TX are
+relative to the server. Client Online means a runtime handshake less than five
+minutes old, not a continuous end-to-end health check.
+
+Reset all or reset one row through a themed confirmation. Client reset clears
+traffic plus saved handshake; upstream reset clears traffic only. Other rows,
+keys, routes and active tunnels are preserved. New activity starts accumulating
+immediately. A `.before-reset-<timestamp>` file is retained beside the statistics;
+there is currently no automatic retention policy for these reset backups.
+
+The global routing-policy switch bypasses destination policies without deleting
+them or changing individual flags. Disabled rows are visually muted except for
+status and controls; editing, individual toggling and deletion remain available
+even while global policy application is off. New/import/edit forms use modal
+windows. The language choice is stored in browser localStorage. About displays
+the base version/commit, local build and AmneziaWG runtime; build metadata resides
+in `server/app/build-info.json` and must be updated as part of release preparation.
+
+### Additional verification
+
+The workflow includes export, QR packet, settings, source-routing, statistics and
+individual-reset unit tests, plus isolated enhancement API suites. For a local
+Linux Docker run, build `awg-chain-easy:review` from `server/` and use the commands
+in `.github/workflows/test.yml`, replacing its image tag as needed. API suites need
+`NET_ADMIN`, `SYS_ADMIN`, `/dev/net/tun` and the documented IPv4 sysctls, and must
+run in separate disposable containers with `--network none` and no production
+config volume. A scan of the QR in every Amnezia application/version is outside
+this automated matrix.
+
+Known review items include the upstream keepalive-range parser (a range such as
+`25-35` is still passed through the single-port parser when reading stats),
+IPv4-only routing, the first-resolver-only pinned DNS path, local topology wording
+in translations, and the absence of a broad filesystem/network transaction
+across all configuration mutations.

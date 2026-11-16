@@ -151,7 +151,7 @@ class DnsPolicyProxy {
     this.exchanges = new Set();
   }
 
-  forward(query, transport = 'udp') {
+  forward(query, transport = 'udp', upstream = this.routing.dnsUpstream) {
     const outgoing = Buffer.from(query);
     outgoing.writeUInt16BE(crypto.randomInt(65536));
     return new Promise((resolve, reject) => {
@@ -187,9 +187,9 @@ class DnsPolicyProxy {
           if (length < 12) return finish(new Error('Invalid DNS frame'));
           if (buffer.length < length + 2) return;
           const response = buffer.subarray(2, length + 2);
-          try { inspectDns(outgoing, response); finish(null, response); } catch (error) { finish(error); }
+          try { inspectDns(outgoing, response); if (![0, 3].includes(response.readUInt16BE(2) & 15)) throw new Error('DNS upstream error'); finish(null, response); } catch (error) { finish(error); }
         });
-        socket.connect(this.upstreamPort, this.routing.dnsUpstream, () => {
+        socket.connect(this.upstreamPort, upstream, () => {
           if (finished) return;
           const prefix = Buffer.alloc(2);
           prefix.writeUInt16BE(outgoing.length);
@@ -197,11 +197,12 @@ class DnsPolicyProxy {
         });
       } else {
         socket.on('message', (response, remote) => {
-          if (remote.address !== this.routing.dnsUpstream || remote.port !== this.upstreamPort) return;
+          if (remote.address !== upstream || remote.port !== this.upstreamPort) return;
           try { inspectDns(outgoing, response); } catch (_) { return; }
+          if (![0, 3].includes(response.readUInt16BE(2) & 15)) return finish(new Error('DNS upstream error'));
           finish(null, response);
         });
-        socket.connect(this.upstreamPort, this.routing.dnsUpstream, () => {
+        socket.connect(this.upstreamPort, upstream, () => {
           if (!finished) socket.send(outgoing, (error) => { if (error) finish(error); });
         });
       }
@@ -217,7 +218,14 @@ class DnsPolicyProxy {
     this.pending++;
     this.clients.set(client, count + 1);
     try {
-      const response = await this.forward(query, transport);
+      let response;
+      let lastError;
+      for (const upstream of [...(this.routing.dnsUpstreams || [this.routing.dnsUpstream])]) {
+        if (this.stopping) throw new Error('DNS proxy stopped');
+        try { response = await this.forward(query, transport, upstream); break; }
+        catch (error) { lastError = error; }
+      }
+      if (!response) throw lastError || new Error('DNS upstream unavailable');
       const result = inspectDns(query, response);
       if (!this.stopping && result.addresses.length) {
         const policy = this.routing.matchingDomainPolicy(result.domain);

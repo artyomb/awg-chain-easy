@@ -15,7 +15,7 @@ FROM ${AWG_IMAGE}
 ARG AWG_IMAGE
 ENV AMNEZIAWG_IMAGE=${AWG_IMAGE}
 
-RUN apk add --no-cache nodejs apache2-utils libqrencode-tools nftables wireguard-tools ca-certificates util-linux-misc
+RUN apk add --no-cache nodejs apache2-utils libqrencode-tools nftables wireguard-tools ca-certificates util-linux-misc conntrack-tools
 COPY --from=wireguard-go-build /src/wireguard-go/wireguard-go /usr/local/bin/wireguard-go
 COPY --from=wireguard-go-build /usr/local/bin/awg-chain-probe /usr/local/bin/awg-chain-probe
 

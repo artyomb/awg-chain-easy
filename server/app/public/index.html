@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>AWG Chain Easy</title>
+  <link rel="icon" href="/favicon.svg?v=20261116" type="image/svg+xml">
+  <link rel="alternate icon" href="/favicon.ico?v=20261116" sizes="16x16 32x32 48x48">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20261116">
   <link rel="stylesheet" href="/styles.css">
   <script defer src="/app.js"></script>
 </head>
@@ -15,8 +18,16 @@
       <nav id="primary-nav" class="primary-nav" aria-label="Primary navigation" hidden>
         <button class="nav-button active" data-page="clients" type="button">Clients</button>
         <button class="nav-button" data-page="routing" type="button">Routing</button>
+        <button class="nav-button" data-page="settings" type="button">Settings</button>
+        <button class="nav-button" data-page="about" type="button">About</button>
       </nav>
-      <button id="logout-button" class="button secondary compact" type="button" hidden>Sign out</button>
+      <div class="header-actions">
+        <div id="language-switch" class="language-switch" role="group" aria-label="Interface language">
+          <button type="button" data-language="ru" aria-label="Русский" aria-pressed="false"><svg viewBox="0 0 24 16" width="24" height="16" aria-hidden="true"><path fill="#fff" d="M0 0h24v16H0z"/><path fill="#0039a6" d="M0 5.33h24v10.67H0z"/><path fill="#d52b1e" d="M0 10.67h24V16H0z"/></svg><span>RU</span></button>
+          <button type="button" data-language="en" aria-label="English" aria-pressed="false"><svg viewBox="0 0 24 16" width="24" height="16" aria-hidden="true"><path fill="#012169" d="M0 0h24v16H0z"/><path stroke="#fff" stroke-width="4" d="m0 0 24 16M24 0 0 16"/><path stroke="#c8102e" stroke-width="1.5" d="m0 0 24 16M24 0 0 16"/><path stroke="#fff" stroke-width="6" d="M12 0v16M0 8h24"/><path stroke="#c8102e" stroke-width="3" d="M12 0v16M0 8h24"/></svg><span>EN</span></button>
+        </div>
+        <button id="logout-button" class="button secondary compact" type="button" hidden>Sign out</button>
+      </div>
     </div>
   </header>
 
@@ -55,23 +66,12 @@
 
       <p id="page-message" class="page-message" role="status" hidden></p>
 
-      <section id="create-panel" class="create-panel" aria-labelledby="create-title" hidden>
-        <div class="section-heading">
-          <div><h2 id="create-title">New client</h2><p>The next free address is assigned automatically.</p></div>
-          <button id="cancel-create-button" class="button secondary compact" type="button">Cancel</button>
-        </div>
-        <form id="create-form" class="inline-form">
-          <div class="field"><label for="client-name">Name</label><input id="client-name" name="name" maxlength="64" autocomplete="off" required></div>
-          <div class="field"><label for="client-protocol">Protocol</label><select id="client-protocol" name="protocol"><option value="AWG3">AWG3</option><option value="AWG2">AWG2 (legacy/mobile)</option><option value="WG">WireGuard (native)</option></select></div>
-          <button class="button primary" type="submit">Create client</button>
-        </form>
-        <p id="create-error" class="form-error" role="alert"></p>
-      </section>
+
 
       <section class="resource-section" aria-labelledby="clients-title">
         <div class="section-heading">
           <div><h2 id="clients-title">Access profiles</h2><p id="last-updated">Waiting for server data.</p></div>
-          <button id="refresh-button" class="button secondary compact" type="button">Refresh</button>
+          <div class="row-actions"><button id="reset-statistics-button" class="button danger compact" type="button">Reset all</button><button id="refresh-button" class="button secondary compact" type="button">Refresh</button></div>
         </div>
 
         <div class="table-wrap">
@@ -92,10 +92,6 @@
           <div>
             <h1>Destination routing</h1>
             <p>Route domains and IPv4 networks directly, through an upstream AWG tunnel, or block them.</p>
-          </div>
-          <div class="page-actions">
-            <button id="new-upstream-button" class="button secondary" type="button">Import upstream</button>
-            <button id="new-policy-button" class="button primary" type="button">New policy</button>
           </div>
         </div>
 
@@ -120,7 +116,7 @@
         <section class="create-panel" aria-labelledby="failover-title">
           <div class="section-heading">
             <div><h2 id="failover-title">Default-route failover</h2><p id="failover-status" role="status">Disabled</p></div>
-            <button id="failover-return" class="button secondary compact" type="button" hidden>Use higher priority</button>
+            <div class="row-actions"><button id="failover-return" class="button secondary compact" type="button" hidden>Use higher priority</button><button id="failover-refresh" class="button secondary compact" type="button">Refresh</button></div>
           </div>
           <div id="failover-health-table" class="table-wrap" hidden>
             <table aria-label="Failover health checks">
@@ -129,10 +125,67 @@
             </table>
           </div>
           <p id="failover-runtime-error" class="form-error" role="alert" hidden></p>
-          <details id="failover-settings" class="failover-settings">
-            <summary>Configure failover</summary>
-            <form id="failover-form" class="stack-form">
-              <label class="toggle-field"><input id="failover-enabled" type="checkbox">Enable automatic failover</label>
+
+        </section>
+
+
+
+        <section class="resource-section spaced" aria-labelledby="upstreams-title">
+          <div class="section-heading"><div><h2 id="upstreams-title">Upstream tunnels</h2><p>Each upstream has an isolated network namespace, so configs can share tunnel addresses.</p></div><div class="row-actions routing-header-actions"><button id="new-upstream-button" class="button primary compact" type="button">Import</button><button id="reset-upstream-statistics" class="button danger compact" type="button">Reset all</button><button id="upstreams-refresh" class="button secondary compact" type="button">Refresh</button></div></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Failover priority</th><th>Interface</th><th>Endpoint</th><th>Connection</th><th>Handshake</th><th>Transfer</th><th class="actions-column">Actions</th></tr></thead>
+              <tbody id="upstream-rows"></tbody>
+            </table>
+            <div id="upstream-empty" class="empty-state"><p>No upstream tunnels configured.</p></div>
+          </div>
+        </section>
+
+
+
+        <section class="resource-section" aria-labelledby="policies-title">
+          <div class="section-heading"><div><h2 id="policies-title">Routing policies</h2><p>Domain results are added with DNS TTL-based expiration.</p><p id="policies-global-status" role="status"></p></div><div class="routing-header-actions"><button id="new-policy-button" class="button primary compact" type="button">New policy</button><div class="segmented-switch policy-mode-buttons" role="group" aria-label="Routing policies"><button id="policies-enable" class="button primary compact" type="button" aria-pressed="true">Enable</button><button id="policies-disable" class="button secondary compact" type="button" aria-pressed="false">Disable</button></div></div></div><p class="policy-switch-hint">Switching policies may interrupt automatic-mode client connections. Individual rule settings are preserved.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Priority</th><th>Name</th><th>Matches</th><th>Destination</th><th>Status</th><th class="actions-column">Actions</th></tr></thead>
+              <tbody id="policy-rows"></tbody>
+            </table>
+            <div id="policy-empty" class="empty-state"><p>No destination policies configured.</p></div>
+          </div>
+        </section>
+      </div>
+    </section>
+    <section id="settings-page" hidden>
+      <div class="page-heading"><h1>Settings</h1></div>
+      <section class="create-panel">
+        <h2>Server name</h2>
+        <p>Used in exported configurations, vpn:// keys and QR codes.</p>
+        <form id="server-settings-form" class="stack-form">
+          <div class="field"><label for="settings-server-name">Server name</label><input id="settings-server-name" maxlength="64" required></div>
+          <p id="server-settings-message" role="status"></p>
+          <div><button class="button primary" type="submit">Save</button></div>
+        </form>
+      </section>
+      <section class="create-panel">
+        <h2>DNS proxy</h2>
+        <p>DNS servers are queried in order. A timeout or error tries the next server. A domain-not-found response does not trigger a retry.</p>
+        <p>Backup DNS servers are used by the proxy on Server A. Clients pinned to B/C currently use only the first DNS server through their selected tunnel. Test DNS measures response times from Server A without changing the settings.</p>
+        <form id="dns-settings-form" class="stack-form">
+          <div class="table-wrap"><table class="dns-settings-table"><thead><tr><th>Priority</th><th>IPv4 address</th><th>Status</th><th class="dns-actions-heading">Actions</th></tr></thead><tbody id="dns-settings-rows"></tbody></table></div>
+          <div class="row-actions settings-actions"><button id="dns-add" type="button" class="button secondary">Add DNS server</button><button id="dns-test" type="button" class="button secondary">Test DNS</button></div>
+          <p id="dns-settings-message" role="status"></p>
+          <div><button class="button primary" type="submit">Save</button></div>
+        </form>
+      </section>
+          <section id="failover-settings" class="resource-section">
+            <div class="section-heading failover-heading">
+              <div><h2>Failover parameters</h2>
+            <p>Automatic failover checks upstream availability and switches the default route to another eligible tunnel when the current one fails. Enable it to edit the check parameters; disabling preserves their saved values.</p></div>
+              <div class="segmented-switch" role="group" aria-label="Failover parameters"><button id="failover-enable" class="button primary compact" type="button" aria-pressed="true">Enable</button><button id="failover-disable" class="button secondary compact" type="button" aria-pressed="false">Disable</button></div>
+            </div>
+            <form id="failover-form" class="stack-form failover-body">
+              <input id="failover-enabled" type="checkbox" hidden>
+              <fieldset id="failover-fields" class="failover-fields">
               <p>Lower numbers are preferred. Equal-priority upstreams are interchangeable; the current choice stays selected while it works. Destination policies keep their selected routes.</p>
               <p class="secondary-value">Set priorities in the <a href="#upstreams-title">Upstreams list</a>. Include at least two upstreams, including the saved default, and enable their tunnels. A blank priority excludes an upstream from failover.</p>
               <div class="form-grid">
@@ -144,13 +197,35 @@
               </div>
               <label class="toggle-field"><input id="failover-auto-return" type="checkbox">Automatically return to a higher priority after recovery</label>
               <p>If no candidate is usable, new default-route traffic is blocked. With automatic return off, a working upstream stays selected until it fails or you choose “Use higher priority”. Existing connections may need to reconnect after a switch.</p>
+              </fieldset>
               <p id="failover-error" class="form-error" role="alert"></p>
-              <div><button class="button primary" type="submit">Save failover</button></div>
+              <div><button class="button primary" type="submit">Save</button></div>
             </form>
-          </details>
-        </section>
+          </section>
+      <section class="create-panel">
+        <h2>QR code format</h2>
+        <p>Choose the format opened by the client QR button. Configuration QR (.conf) contains the native profile. Amnezia QR (vpn://) includes the server name and may cycle through several frames; scan all frames in Amnezia VPN.</p>
+        <form id="qr-settings-form" class="stack-form">
+          <div class="field"><label for="settings-qr-format">QR code format</label><select id="settings-qr-format"><option value="conf">Configuration QR (.conf)</option><option value="amnezia">Amnezia QR (vpn://)</option></select></div>
+          <p id="qr-settings-message" role="status"></p>
+          <div><button class="button primary" type="submit">Save</button></div>
+        </form>
+      </section>
+    </section>
+    <section id="about-page" hidden>
+      <div class="page-heading"><h1>About</h1></div>
+      <section class="create-panel about-content">
+        <h2>AWG Chain Easy</h2>
+        <p>AWG Chain Easy is a web control panel for a VPN gateway supporting AmneziaWG 3, AmneziaWG 2 and WireGuard. It lets you create client profiles, export configurations and QR codes, and monitor handshakes and accumulated traffic.</p>
+        <p>The gateway can send client traffic directly to the Internet or through imported upstream tunnels. Domain and network rules select destinations, while priority-based failover checks upstream availability and switches routes when needed.</p>
+        <p>This installation includes local enhancements: client routing modes, persistent statistics, Russian and English interfaces, Amnezia QR export and settings managed from the web interface.</p>
+        <dl class="about-versions"><dt>Base project version</dt><dd id="about-version">—</dd><dt>Base commit</dt><dd id="about-commit">—</dd><dt>Local build</dt><dd id="about-build">—</dd><dt>AmneziaWG runtime</dt><dd id="about-awg">—</dd></dl>
+        <p><span>Repository</span>: <a href="https://github.com/artyomb/awg-chain-easy" target="_blank" rel="noopener noreferrer">artyomb/awg-chain-easy</a><br><span>Project author</span>: <a href="https://github.com/artyomb" target="_blank" rel="noopener noreferrer">artyomb</a></p>
+      </section>
+    </section>
+  </main>
 
-        <section id="upstream-create-panel" class="create-panel" aria-labelledby="upstream-create-title" hidden>
+        <dialog id="upstream-create-panel" class="dialog routing-editor-dialog" aria-labelledby="upstream-create-title">
           <div class="section-heading">
             <div><h2 id="upstream-create-title">Import upstream AWG config</h2><p>AWG3 and legacy AWG profiles are supported; executable directives are rejected.</p></div>
             <button id="cancel-upstream-button" class="button secondary compact" type="button">Cancel</button>
@@ -163,20 +238,9 @@
             <div><button class="button primary" type="submit">Import and start</button></div>
           </form>
           <p id="upstream-error" class="form-error" role="alert"></p>
-        </section>
+        </dialog>
 
-        <section class="resource-section spaced" aria-labelledby="upstreams-title">
-          <div class="section-heading"><div><h2 id="upstreams-title">Upstream tunnels</h2><p>Each upstream has an isolated network namespace, so configs can share tunnel addresses.</p></div></div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Name</th><th>Failover priority</th><th>Interface</th><th>Endpoint</th><th>Connection</th><th>Handshake</th><th>Transfer</th><th class="actions-column">Actions</th></tr></thead>
-              <tbody id="upstream-rows"></tbody>
-            </table>
-            <div id="upstream-empty" class="empty-state"><p>No upstream tunnels configured.</p></div>
-          </div>
-        </section>
-
-        <section id="policy-create-panel" class="create-panel" aria-labelledby="policy-create-title" hidden>
+        <dialog id="policy-create-panel" class="dialog routing-editor-dialog" aria-labelledby="policy-create-title">
           <div class="section-heading">
             <div><h2 id="policy-create-title">New destination policy</h2><p>Lower priority numbers are evaluated first.</p></div>
             <button id="cancel-policy-button" class="button secondary compact" type="button">Cancel</button>
@@ -190,21 +254,21 @@
             <div><button id="policy-submit-button" class="button primary" type="submit">Create policy</button></div>
           </form>
           <p id="policy-error" class="form-error" role="alert"></p>
-        </section>
+        </dialog>
 
-        <section class="resource-section" aria-labelledby="policies-title">
-          <div class="section-heading"><div><h2 id="policies-title">Routing policies</h2><p>Domain results are added with DNS TTL-based expiration.</p></div></div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Priority</th><th>Name</th><th>Matches</th><th>Destination</th><th>Status</th><th class="actions-column">Actions</th></tr></thead>
-              <tbody id="policy-rows"></tbody>
-            </table>
-            <div id="policy-empty" class="empty-state"><p>No destination policies configured.</p></div>
-          </div>
-        </section>
-      </div>
-    </section>
-  </main>
+      <dialog id="create-panel" class="dialog create-client-dialog" aria-labelledby="create-title">
+        <div class="section-heading">
+          <div><h2 id="create-title">New client</h2><p>The next free address is assigned automatically.</p></div>
+          <button id="cancel-create-button" class="button secondary compact" type="button">Cancel</button>
+        </div>
+        <form id="create-form" class="inline-form">
+          <div class="field"><label for="client-name">Name</label><input id="client-name" name="name" maxlength="64" autocomplete="off" required></div>
+          <div class="field"><label for="client-protocol">Protocol</label><select id="client-protocol" name="protocol"><option value="AWG3">AWG3</option><option value="AWG2">AWG2 (legacy/mobile)</option><option value="WG">WireGuard (native)</option></select></div>
+          <div class="field"><label for="client-route">Routing mode</label><select id="client-route" aria-describedby="client-route-hint"></select><p id="client-route-hint" class="secondary-value"></p></div>
+          <button class="button primary" type="submit">Create client</button>
+        </form>
+        <p id="create-error" class="form-error" role="alert"></p>
+      </dialog>
 
   <dialog id="peer-connection-dialog" class="dialog" aria-labelledby="peer-connection-title">
     <div class="dialog-heading"><h2 id="peer-connection-title">Peer connection</h2><button id="close-peer-connection" class="button secondary compact" type="button">Close</button></div>
@@ -240,16 +304,47 @@
     </form>
   </dialog>
 
+  <dialog id="rename-dialog" class="dialog" aria-labelledby="rename-title">
+    <div class="dialog-heading"><h2 id="rename-title">Edit client</h2><button id="close-rename" class="button secondary compact" type="button">Close</button></div>
+    <form id="rename-form" class="stack-form">
+      <label><span>Name</span><input id="rename-name" type="text" required maxlength="64" autocomplete="off"></label>
+      <label><span>Routing mode</span><select id="rename-route" aria-describedby="rename-route-hint"></select></label>
+      <p id="rename-route-hint" class="secondary-value"></p>
+      <p class="secondary-value">Changing the routing mode may interrupt active connections. No profile reimport is needed.</p>
+      <p id="rename-error" class="form-error" role="alert"></p>
+      <div><button id="rename-save" class="button primary" type="submit">Save changes</button></div>
+    </form>
+  </dialog>
+
   <dialog id="config-dialog" class="dialog" aria-labelledby="config-title">
     <div class="dialog-heading"><h2 id="config-title">Client config</h2><button id="close-config-button" class="button secondary compact" type="button">Close</button></div>
     <p id="config-loading" role="status" hidden>Loading configuration…</p>
     <textarea id="config-text" class="code-input config-text" rows="18" aria-label="Client configuration" readonly spellcheck="false" wrap="off" hidden></textarea>
+    <pre id="config-vpn-text" class="code-input vpn-preview" aria-label="VPN connection string" tabindex="0" hidden></pre>
     <p id="config-error" class="form-error" role="alert"></p>
+    <div class="config-actions"><a id="config-download" class="button primary" hidden>Download</a><button id="config-copy" class="button secondary" type="button" hidden>Copy</button></div>
+  </dialog>
+
+  <dialog id="confirm-action-dialog" class="dialog" aria-labelledby="confirm-action-title" aria-describedby="confirm-action-message">
+    <div class="dialog-heading"><h2 id="confirm-action-title"></h2></div>
+    <p id="confirm-action-message" class="confirmation-message"></p>
+    <div class="confirmation-actions">
+      <button id="confirm-action-cancel" class="button secondary" type="button">Cancel</button>
+      <button id="confirm-action-accept" class="button danger" type="button"></button>
+    </div>
   </dialog>
 
   <dialog id="qr-dialog" class="dialog">
     <div class="dialog-heading"><div><h2 id="qr-title">Client QR code</h2><p>Scan with a client compatible with the selected protocol.</p></div><button id="close-qr-button" class="button secondary compact" type="button">Close</button></div>
-    <div class="qr-surface"><img id="qr-image" alt="Client configuration QR code"></div>
+    <section id="qr-conf-panel">
+      <div class="qr-surface"><img id="qr-image" alt="Client configuration QR code"></div>
+    </section>
+    <section id="qr-amnezia-panel" hidden>
+      <p>Scan all changing QR codes to import the connection.</p>
+      <p id="qr-vpn-status" role="status"></p>
+      <div class="qr-surface"><img id="qr-vpn-image" alt="Amnezia connection QR code" hidden></div>
+    </section>
+
   </dialog>
 </body>
 </html>

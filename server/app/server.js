@@ -7,8 +7,14 @@ const http = require('node:http');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { RoutingManager, DnsPolicyProxy } = require('./routing');
+const { ClientStatistics, runtimeGeneration } = require('./client-statistics');
 const { portRange, reverseInitiation, peerConnectionLines } = require('./connections');
 const { LoginGuard, verifyPassword, clientAddress, trustedProxies, sessionCookie } = require('./auth');
+const { toggle, awg31Parameters, vpnUri, attachment } = require('./profile-export');
+
+const { amneziaQrChunks } = require('./amnezia-qr');
+
+const { GuiSettings } = require('./gui-settings');
 
 const DATA_DIR = '/etc/wireguard';
 const STATE_FILE = path.join(DATA_DIR, 'wg0.json');
@@ -41,6 +47,7 @@ function integerEnv(name, fallback, min, max) {
 const settings = {
   upstreamPorts: portRange(env('UPSTREAM_PORT_RANGE', '54323-54330')),
   host: env('WG_HOST', ''),
+  serverName: env('VPN_SERVER_NAME', 'Server A'),
   port: integerEnv('WG_PORT', 51820, 1, 65535),
   configPort: integerEnv('WG_CONFIG_PORT', env('WG_PORT', 51820), 1, 65535),
   addressPattern: env('WG_DEFAULT_ADDRESS', '10.8.3.x'),
@@ -65,6 +72,12 @@ const settings = {
   dnsTtlMin: integerEnv('DNS_TTL_MIN', 30, 1, 86400),
   dnsTtlMax: integerEnv('DNS_TTL_MAX', 86400, 1, 604800),
 };
+
+const guiSettings = new GuiSettings(path.join(DATA_DIR, 'gui-settings.json'), {
+  serverName: settings.serverName,
+  dnsUpstreams: [...new Set([settings.dnsUpstream, '8.8.8.8', '1.0.0.1'])],
+  qrFormat: 'conf',
+});
 
 function parseAddressPattern(name, value) {
   const match = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.x$/);
@@ -161,6 +174,8 @@ function initialServer(protocol = 'AWG3') {
     rejectAfterTime: env('REJECT_AFTER_TIME', '170-190'),
     keepaliveTimeout: env('KEEPALIVE_TIMEOUT', '8-12'),
     maxHandshakeAttempts: env('MAX_HANDSHAKE_ATTEMPTS', '15-20'),
+    randomTrailers: protocol === 'AWG3' ? toggle(env('AWG3_RANDOM_TRAILERS', 'off')) : undefined,
+    disableCookies: protocol === 'AWG3' ? toggle(env('AWG3_DISABLE_COOKIES', 'off')) : undefined,
   };
   if (protocol === 'AWG3' && [server.s1, server.s2, server.s3, server.s4].some((value) => value < 12)) throw new Error('AWG 3 requires S1-S4 to be at least 12');
   if (server.jmin > server.jmax || server.jmax >= settings.mtu) throw new Error('Require JMIN <= JMAX < WG_MTU');
@@ -236,6 +251,7 @@ function interfaceParameters(server, protocol) {
     `RekeyAfterTime = ${server.rekeyAfterTime}`, `RekeyTimeout = ${server.rekeyTimeout}`,
     `RejectAfterTime = ${server.rejectAfterTime}`, `KeepaliveTimeout = ${server.keepaliveTimeout}`,
     `MaxHandshakeAttempts = ${server.maxHandshakeAttempts}`,
+    ...awg31Parameters(server),
   );
   return parameters.join('\n');
 }
@@ -261,7 +277,8 @@ function clientConfiguration(state, client) {
   const server = serverFor(state, protocol);
   const dns = protocolConfig.dns ? `DNS = ${protocolConfig.dns}\n` : '';
   const keepalive = settings.persistentKeepalive ? `PersistentKeepalive = ${settings.persistentKeepalive}\n` : '';
-  return `[Interface]\nAddress = ${client.address}/32\nPrivateKey = ${client.privateKey}\n${dns}MTU = ${settings.mtu}\n${interfaceParameters(server, protocol)}\n\n[Peer]\nPublicKey = ${server.publicKey}\nPresharedKey = ${client.preSharedKey}\nAllowedIPs = ${settings.allowedIps}\nEndpoint = ${endpoint(protocol)}\n${keepalive}`;
+  const label = `${guiSettings.value.serverName} — ${client.name}`.replace(/[\r\n]/g, ' ');
+  return `# ${label}\n[Interface]\nAddress = ${client.address}/32\nPrivateKey = ${client.privateKey}\n${dns}MTU = ${settings.mtu}\n${interfaceParameters(server, protocol)}\n\n[Peer]\nPublicKey = ${server.publicKey}\nPresharedKey = ${client.preSharedKey}\nAllowedIPs = ${settings.allowedIps}\nEndpoint = ${endpoint(protocol)}\n${keepalive}`;
 }
 
 function safeName(name) {
@@ -316,11 +333,42 @@ let state;
 let routing;
 let dnsProxy;
 
+function clearChangedClientConnections(previous, next) {
+  const signature = (client) => client ? JSON.stringify([client.enabled, client.egress || 'default', client.upstreamId || null, client.address]) : null;
+  const addresses = new Set();
+  for (const id of new Set([...Object.keys(previous.clients), ...Object.keys(next.clients)])) {
+    const before = previous.clients[id], after = next.clients[id];
+    if (signature(before) !== signature(after)) {
+      if (before) addresses.add(before.address);
+      if (after) addresses.add(after.address);
+    }
+  }
+  for (const address of addresses) {
+    const result = spawnSync('conntrack', ['-D', '-f', 'ipv4', '-s', address], { encoding: 'utf8' });
+    // conntrack returns 1 when no matching entries exist.
+    if (result.error || ![0, 1].includes(result.status)) throw new Error('Unable to clear previous client connections');
+  }
+}
+
 function mutate(operation) {
   return routing.enqueue(async () => {
-    await operation();
-    await writeArtifacts(state);
-    syncRuntime(state);
+    observeStatistics();
+    const previous = JSON.parse(JSON.stringify(state));
+    try {
+      await operation();
+      await routing.syncDirectClients();
+      await writeArtifacts(state);
+      syncRuntime(state);
+      clearChangedClientConnections(previous, state);
+      const restarted = new Set(Object.values(state.clients).filter((client) => previous.clients[client.id] && previous.clients[client.id].enabled !== client.enabled).map((client) => client.id));
+      observeStatistics(runtimeStats(), restarted);
+    } catch (error) {
+      state = previous;
+      await routing.syncDirectClients();
+      await writeArtifacts(state);
+      syncRuntime(state);
+      throw error;
+    }
   });
 }
 
@@ -328,10 +376,12 @@ function runtimeStats() {
   const byKey = new Map();
   for (const definition of Object.values(PROTOCOLS)) {
     try {
+      const generation = runtimeGeneration(definition.interface);
       const lines = command(definition.command, ['show', definition.interface, 'dump']).split('\n').slice(1);
       for (const line of lines) {
         const [key, , endpointValue, , handshake, received, sent] = line.split('\t');
         byKey.set(key, {
+          generation,
           endpoint: endpointValue === '(none)' ? null : endpointValue,
           latestHandshakeAt: handshake === '0' ? null : new Date(Number(handshake) * 1000).toISOString(),
           transferRx: Number(received || 0), transferTx: Number(sent || 0),
@@ -342,8 +392,22 @@ function runtimeStats() {
   return byKey;
 }
 
+let clientStatistics;
+let statisticsTimer;
+let lastStatisticsError = 0;
+function observeStatistics(stats = runtimeStats(), restartIds = new Set()) {
+  try { clientStatistics?.observe(Object.values(state.clients), stats, restartIds); }
+  catch (error) {
+    if (Date.now() - lastStatisticsError > 60_000) {
+      console.error('[awg-chain-easy] Cannot persist client statistics: ' + error.message);
+      lastStatisticsError = Date.now();
+    }
+  }
+}
+
 function publicClients() {
   const stats = runtimeStats();
+  observeStatistics(stats);
   return Object.values(state.clients)
     .map((client) => ({
       id: client.id,
@@ -351,10 +415,17 @@ function publicClients() {
       protocol: client.protocol || 'AWG3',
       address: client.address,
       enabled: client.enabled,
+      egress: client.egress || 'default',
+      upstreamId: client.egress === 'upstream' ? client.upstreamId : null,
       createdAt: client.createdAt,
       updatedAt: client.updatedAt,
       reverseInitiation: client.reverseInitiation || null,
-      ...(stats.get(client.publicKey) || { endpoint: null, latestHandshakeAt: null, transferRx: 0, transferTx: 0 }),
+      endpoint: stats.get(client.publicKey)?.endpoint || null,
+      transferRx: stats.get(client.publicKey)?.transferRx || 0,
+      transferTx: stats.get(client.publicKey)?.transferTx || 0,
+      runtimeLatestHandshakeAt: stats.get(client.publicKey)?.latestHandshakeAt || null,
+      latestHandshakeAt: stats.get(client.publicKey)?.latestHandshakeAt || null,
+      ...(clientStatistics ? clientStatistics.values(client) : {}),
     }))
     .sort((a, b) => a.address.localeCompare(b.address, undefined, { numeric: true }));
 }
@@ -423,6 +494,16 @@ function requireSameOrigin(request) {
   if (origin && new URL(origin).host !== request.headers.host) throw Object.assign(new Error('Invalid request origin'), { status: 403 });
 }
 
+async function resetClientStatistics(id = null) {
+  await routing.enqueue(async () => {
+    if (id) clientById(id);
+    if (!clientStatistics) throw Object.assign(new Error('Client statistics storage is unavailable'), { status: 503 });
+    observeStatistics();
+    if (fs.existsSync(clientStatistics.filename)) await fsp.copyFile(clientStatistics.filename, clientStatistics.filename + '.before-reset-' + Date.now());
+    clientStatistics.reset(Object.values(state.clients), runtimeStats(), id ? new Set([id]) : null);
+  });
+}
+
 async function api(request, response, url) {
   if (url.pathname === '/api/health') {
     const tunnels = {};
@@ -457,6 +538,62 @@ async function api(request, response, url) {
       'Set-Cookie': sessionCookie('', 0, settings.https),
     });
   }
+  if (url.pathname === '/api/routing/upstreams/statistics/reset' && request.method === 'POST') {
+    const body = await readJson(request, 4096);
+    if (body.confirm !== true) throw Object.assign(new Error('Traffic reset confirmation is required'), { status: 400 });
+    await routing.resetUpstreamTraffic();
+    return send(response, 200, { success: true });
+  }
+  if (url.pathname === '/api/about' && request.method === 'GET') {
+    const info = JSON.parse(await fsp.readFile(path.join(__dirname, 'build-info.json'), 'utf8'));
+    return send(response, 200, { ...info, amneziawgVersion });
+  }
+  if (url.pathname === '/api/settings' && request.method === 'GET') return send(response, 200, guiSettings.value);
+  if (url.pathname === '/api/settings' && request.method === 'PUT') {
+    const patch = await readJson(request, 8192);
+    await routing.enqueue(async () => {
+      const next = guiSettings.next(patch);
+      const previous = guiSettings.value;
+      const changedPrimary = next.dnsUpstreams[0] !== previous.dnsUpstreams[0];
+      const selfAddresses = Object.keys(PROTOCOLS).map(p => serverFor(state, p).address);
+      if (next.dnsUpstreams.some(ip => selfAddresses.includes(ip))) throw Object.assign(new Error('DNS server cannot point to this VPN DNS proxy'), { status: 400 });
+      try {
+        routing.dnsUpstream = next.dnsUpstreams[0];
+        routing.dnsUpstreams = next.dnsUpstreams;
+        if (changedPrimary) await routing.reconcile();
+        guiSettings.save(next);
+      } catch (error) {
+        routing.dnsUpstream = previous.dnsUpstreams[0];
+        routing.dnsUpstreams = previous.dnsUpstreams;
+        if (changedPrimary) await routing.reconcile();
+        throw error;
+      }
+      if (changedPrimary) {
+        for (const c of Object.values(state.clients).filter(c => c.enabled && c.egress === 'upstream')) {
+          for (const protocol of ['udp', 'tcp']) spawnSync('conntrack', ['-D', '-f', 'ipv4', '-s', c.address, '-p', protocol, '--dport', '53'], { encoding: 'utf8' });
+        }
+      }
+    });
+    return send(response, 200, guiSettings.value);
+  }
+  if (url.pathname === '/api/settings/dns/test' && request.method === 'POST') {
+    const { servers } = await readJson(request, 4096);
+    guiSettings.next({ dnsUpstreams: servers });
+    if (servers.some(ip => Object.keys(PROTOCOLS).some(p => serverFor(state, p).address === ip))) throw Object.assign(new Error('DNS server cannot point to this VPN DNS proxy'), { status: 400 });
+    const query = Buffer.from('123401000001000000000000076578616d706c6503636f6d0000010001', 'hex');
+    const results = await Promise.all(servers.map(async address => {
+      const started = Date.now();
+      try { await dnsProxy.forward(query, 'udp', address); return { address, success: true, milliseconds: Date.now() - started }; }
+      catch (_) { return { address, success: false, milliseconds: Date.now() - started }; }
+    }));
+    return send(response, 200, { results });
+  }
+  if (url.pathname === '/api/wireguard/statistics/reset' && request.method === 'POST') {
+    const body = await readJson(request);
+    if (body.confirm !== true) throw Object.assign(new Error('Statistics reset confirmation is required'), { status: 400 });
+    await resetClientStatistics();
+    return send(response, 200, { success: true });
+  }
   if (url.pathname === '/api/wireguard/status' && request.method === 'GET') {
     const clients = publicClients();
     return send(response, 200, {
@@ -466,23 +603,24 @@ async function api(request, response, url) {
       endpoints: Object.fromEntries(Object.keys(PROTOCOLS).map((protocol) => [protocol, endpoint(protocol)])),
       addresses: Object.fromEntries(Object.keys(PROTOCOLS).map((protocol) => [protocol, `${serverFor(state, protocol).address}/24`])),
       clients: clients.length, enabled: clients.filter((client) => client.enabled).length,
-      connected: clients.filter((client) => client.latestHandshakeAt && Date.now() - Date.parse(client.latestHandshakeAt) < 180_000).length,
+      connected: clients.filter((client) => client.enabled && client.runtimeLatestHandshakeAt && Date.now() - Date.parse(client.runtimeLatestHandshakeAt) < 300_000).length,
     });
   }
   if (url.pathname === '/api/wireguard/client' && request.method === 'GET') return send(response, 200, publicClients());
   if (url.pathname === '/api/wireguard/client' && request.method === 'POST') {
-    const { name, protocol = 'AWG3' } = await readJson(request);
+    const { name, protocol = 'AWG3', egress = 'default', upstreamId = null } = await readJson(request);
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 64) throw Object.assign(new Error('Name must contain 1-64 characters'), { status: 400 });
     if (!Object.hasOwn(PROTOCOLS, protocol)) throw Object.assign(new Error('Protocol must be AWG3, AWG2, or WG'), { status: 400 });
     let client;
     await mutate(() => {
       if (Object.values(state.clients).some((item) => item.name.toLowerCase() === name.trim().toLowerCase())) throw Object.assign(new Error('Client name already exists'), { status: 409 });
+      const clientRoute = routing.validateClientEgress({ egress, upstreamId });
       const address = routing.allocateClientAddress(protocolSettings(protocol).prefix);
       const privateKey = generatePrivateKey(protocol);
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
       const keyCommand = protocolCommand(protocol);
-      client = { id, name: name.trim(), protocol, address, privateKey, publicKey: publicKey(privateKey, protocol), preSharedKey: command(keyCommand, ['genpsk']), createdAt: now, updatedAt: now, enabled: true };
+      client = { id, name: name.trim(), protocol, ...clientRoute, address, privateKey, publicKey: publicKey(privateKey, protocol), preSharedKey: command(keyCommand, ['genpsk']), createdAt: now, updatedAt: now, enabled: true };
       state.clients[id] = client;
     });
     return send(response, 201, { id: client.id });
@@ -495,6 +633,11 @@ async function api(request, response, url) {
   if (url.pathname === '/api/routing/upstreams' && request.method === 'POST') {
     const upstream = await routing.addUpstream(await readJson(request));
     return send(response, 201, { id: upstream.id });
+  }
+  if (url.pathname === '/api/routing/policies/enabled' && request.method === 'PUT') {
+    const { enabled } = await readJson(request);
+    await routing.setPoliciesEnabled(enabled);
+    return send(response, 200, { success: true });
   }
   if (url.pathname === '/api/routing/policies' && request.method === 'POST') {
     const policy = await routing.addPolicy(await readJson(request));
@@ -513,8 +656,15 @@ async function api(request, response, url) {
     await routing.returnToPreferred();
     return send(response, 200, { success: true });
   }
-  const upstreamMatch = url.pathname.match(/^\/api\/routing\/upstreams\/([0-9a-f-]+)(?:\/(enable|disable|failover-priority|configuration))?$/i);
+  const upstreamMatch = url.pathname.match(/^\/api\/routing\/upstreams\/([0-9a-f-]+)(?:\/(enable|disable|failover-priority|configuration|statistics\/reset))?$/i);
   if (upstreamMatch) {
+    if (request.method === 'POST' && upstreamMatch[2] === 'statistics/reset') {
+      const body = await readJson(request, 4096);
+      if (body.confirm !== true) throw Object.assign(new Error('Statistics reset confirmation is required'), { status: 400 });
+      await routing.resetUpstreamTraffic(upstreamMatch[1]);
+      return send(response, 200, { success: true });
+    }
+
     if (request.method === 'GET' && upstreamMatch[2] === 'configuration') {
       const config = await routing.exportUpstreamConfig(upstreamMatch[1]);
       return send(response, 200, config, 'text/plain; charset=utf-8', { 'Content-Disposition': `attachment; filename="up-${upstreamMatch[1].slice(0, 8)}.conf"` });
@@ -558,10 +708,38 @@ async function api(request, response, url) {
     throw Object.assign(new Error('Method not allowed'), { status: 405 });
   }
 
-  const match = url.pathname.match(/^\/api\/wireguard\/client\/([0-9a-f-]+)(?:\/(configuration|qrcode\.svg|enable|disable|connection))?$/i);
+  const match = url.pathname.match(/^\/api\/wireguard\/client\/([0-9a-f-]+)(?:\/(configuration|configuration\.vpn|qrcode\.svg|qrcode\.vpn\.svg|qrcode\.amnezia|enable|disable|connection|statistics\/reset))?$/i);
   if (!match) throw Object.assign(new Error('Not found'), { status: 404 });
   const client = clientById(match[1]);
   const action = match[2];
+    if (request.method === 'POST' && action === 'statistics/reset') {
+      const body = await readJson(request, 4096);
+      if (body.confirm !== true) throw Object.assign(new Error('Statistics reset confirmation is required'), { status: 400 });
+      await resetClientStatistics(client.id);
+      return send(response, 200, { success: true });
+    }
+
+  if (request.method === 'PUT' && !action) {
+    const body = await readJson(request);
+    const { name } = body;
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 64) throw Object.assign(new Error('Name must contain 1-64 characters'), { status: 400 });
+    await mutate(() => {
+      const current = clientById(match[1]);
+      if (Object.values(state.clients).some((item) => item.id !== current.id && item.name.toLowerCase() === name.trim().toLowerCase())) throw Object.assign(new Error('Client name already exists'), { status: 409 });
+      if (Object.hasOwn(body, 'protocol') && body.protocol !== (current.protocol || 'AWG3')) throw Object.assign(new Error('Client protocol cannot be changed'), { status: 400 });
+      if (Object.hasOwn(body, 'egress')) Object.assign(current, routing.validateClientEgress(body));
+      current.name = name.trim();
+      current.updatedAt = new Date().toISOString();
+    });
+    return send(response, 200, { success: true });
+  }
+  if (request.method === 'GET' && action === 'configuration.vpn') {
+    const uri = vpnUri(clientConfiguration(state, client), { protocol: client.protocol || 'AWG3',
+      serverName: guiSettings.value.serverName, clientName: client.name });
+    return send(response, 200, `${uri}\n`, 'text/plain; charset=utf-8', {
+      'Content-Disposition': attachment(`${guiSettings.value.serverName} - ${client.name}.vpn`),
+    });
+  }
   if (request.method === 'PUT' && action === 'connection') {
     const body = await readJson(request);
     if (!body || !Object.hasOwn(body, 'reverseInitiation')) throw Object.assign(new Error('reverseInitiation is required; use null to disable'), { status: 400 });
@@ -574,11 +752,24 @@ async function api(request, response, url) {
     return send(response, 200, { success: true });
   }
   if (request.method === 'GET' && action === 'configuration') {
-    const filename = client.protocol === 'WG' ? clientFilename(client) : `${safeName(client.name)}.conf`;
-    return send(response, 200, clientConfiguration(state, client), 'text/plain; charset=utf-8', { 'Content-Disposition': `attachment; filename="${filename}"` });
+    const filename = client.protocol === 'WG' ? clientFilename(client) : `${guiSettings.value.serverName} - ${client.name}.conf`;
+    return send(response, 200, clientConfiguration(state, client), 'text/plain; charset=utf-8', { 'Content-Disposition': attachment(filename) });
   }
-  if (request.method === 'GET' && action === 'qrcode.svg') {
-    const svg = command('qrencode', ['-t', 'SVG', '-m', '2', '-s', '8', '-o', '-'], clientConfiguration(state, client));
+  if (request.method === 'GET' && action === 'qrcode.amnezia') {
+    const uri = vpnUri(clientConfiguration(state, client), { protocol: client.protocol || 'AWG3',
+      serverName: guiSettings.value.serverName, clientName: client.name });
+    const frames = amneziaQrChunks(uri).map((chunk) => {
+      const svg = command('qrencode', ['-t', 'SVG', '-l', 'L', '-m', '4', '-s', '8', '-o', '-'], chunk);
+      return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+    });
+    return send(response, 200, { frames }, 'application/json; charset=utf-8');
+  }
+  if (request.method === 'GET' && (action === 'qrcode.svg' || action === 'qrcode.vpn.svg')) {
+    const config = clientConfiguration(state, client);
+    const payload = action === 'qrcode.vpn.svg'
+      ? vpnUri(config, { protocol: client.protocol || 'AWG3', serverName: guiSettings.value.serverName, clientName: client.name })
+      : config;
+    const svg = command('qrencode', ['-t', 'SVG', '-m', '2', '-s', '8', '-o', '-'], payload);
     return send(response, 200, svg, 'image/svg+xml; charset=utf-8');
   }
   if (request.method === 'POST' && (action === 'enable' || action === 'disable')) {
@@ -593,6 +784,9 @@ async function api(request, response, url) {
 }
 
 const staticFiles = {
+  '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
+  '/favicon.ico': ['favicon.ico', 'image/x-icon'],
+  '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png'],
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'application/javascript; charset=utf-8'],
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
@@ -630,13 +824,21 @@ async function main() {
       ...Object.keys(PROTOCOLS).map((protocol) => serverFor(state, protocol).address),
       ...Object.values(state.clients).map((client) => client.address),
     ],
+    clientRoutes: () => Object.values(state.clients),
+    directClientAddresses: () => Object.values(state.clients).filter((client) => client.enabled && client.egress === 'direct').map((client) => client.address),
     mtu: settings.mtu,
-    dnsUpstream: settings.dnsUpstream,
+    dnsUpstream: guiSettings.value.dnsUpstreams[0],
+    dnsUpstreams: guiSettings.value.dnsUpstreams,
     dnsTtlMin: settings.dnsTtlMin,
     dnsTtlMax: settings.dnsTtlMax,
   });
   await routing.load();
   await routing.startAll();
+  try { clientStatistics = new ClientStatistics('/etc/wireguard/client-statistics.json', '/etc/wireguard/handshake-history.json'); }
+  catch (error) { console.error('[awg-chain-easy] Cannot load client statistics: ' + error.message); }
+  observeStatistics();
+  statisticsTimer = setInterval(observeStatistics, 5000);
+  statisticsTimer.unref();
   dnsProxy = new DnsPolicyProxy(routing);
   await dnsProxy.start();
   const server = http.createServer({ requestTimeout: 10000, headersTimeout: 10000, keepAliveTimeout: 5000 }, handle);
@@ -647,6 +849,8 @@ async function main() {
     if (closing) return;
     closing = true;
     server.close();
+    clearInterval(statisticsTimer);
+    observeStatistics();
     await dnsProxy.stop().catch(() => {});
     await routing.shutdown().catch((error) => console.error(`[awg-chain-easy] routing cleanup: ${error.message}`));
     process.exit(0);
